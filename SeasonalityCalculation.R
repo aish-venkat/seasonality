@@ -1,75 +1,45 @@
 # Function to calculate harmonic peaks and nadirs from weekly, monthly, or daily time series
-# Last Updated: April 2, 2023
+# Last Updated: April 6, 2023
 
 # Use pacman package to load/install needed packages
 if (!require("pacman")) install.packages("pacman")
-pacman::p_load(tidyverse, imputeTS, forecast, multitaper, Rssa)
+pacman::p_load(tidyverse, reshape2, multitaper, broom, Rssa, sf, forecast, numDeriv, car)
 
 ######################################################
 # REFERENCES #########################################
 ######################################################
 
-# https://stackoverflow.com/questions/41435777/perform-fourier-analysis-to-a-time-series-in-r
+# Naumova, E. N. & MacNeill, I. B. (2007). 
+# Seasonality assessment for biosurveillance systems. 
+# In Advances in Statistical Methods for the Health Sciences (eds Mesbah, M. et al.) 
+# 437–450 (Birkhäuser, Basel, 2007).
 
-# Percival, D.B. and Walden, A.T. (1993) 
-# Spectral analysis for physical applications. Cambridge University Press.
+# Naumova, E. N., Jagai, J. S., Matyas, B., DeMaria, A., 
+# MacNeill, I. B., & Griffiths, J. K. (2007). 
+# Seasonality in six enterically transmitted diseases and 
+# ambient temperature. Epidemiology & Infection, 135(2), 281-292.
 
 # Alsova, O. K., Loktev, V. B., & Naumova, E. N. (2019). 
 # Rotavirus seasonality: An application of singular spectrum analysis and 
 # polyharmonic modeling. IJERPH 16(22), 4309.
+
+# Falconi, T. A., Cruz, M. S. & Naumova, E. N. (2018).
+# The shift in seasonality of legionellosis in the USA. 
+# Epidemiol. Infect. 146, 1824–1833.
 
 # Simpson, R. B., Zhou, B., & Naumova, E. N. (2020). Seasonal synchronization of 
 # foodborne outbreaks in the United States, 1996–2017. Scientific reports, 10(1), 17500.
 # https://www.nature.com/articles/s41598-020-74435-9
 # Equations for negative binomial regression in Supplementary Table 3
 
+# Ramanathan, K., Thenmozhi, M., George, S., Anandan, S., 
+# Veeraraghavan, B., Naumova, E. N., & Jeyaseelan, L. (2020). 
+# Assessing seasonality variation with harmonic regression: 
+# accommodations for sharp peaks. International journal of environmental research and public health, 17(4), 1318.
+
 ######################################################
 # SUPPORTING FUNCTIONS ###############################
 ######################################################
-
-# Function to return amplitude and frequency from FFT with optional upsampling interval 
-nff = function(x = NULL, n = NULL, upsample = FALSE, up = 10L){
-  # Get time index of time series
-  t <- 1:length(x); N <- length(x);
-  #The direct transformation
-  #The first frequency is DC, the rest are duplicated
-  dff = fft(x)
-  #The time
-  t = seq(from = 1, to = length(x))
-  
-  if(isTRUE(upsample)){
-    
-    # Upsampled time
-    nt = seq(from = 1, to = length(x)+1-1/up, by = 1/up)
-    #New spectrum
-    ndff = array(data = 0, dim = c(length(nt), 1L))
-    ndff[1] = dff[1] #First component = average (DC component), not meaningful
-    if(n != 0){
-      ndff[2:(n+1)] = dff[2:(n+1)] #The positive frequencies always come first
-      #The negative ones are trickier
-      ndff[length(ndff):(length(ndff) - n + 1)] = dff[length(x):(length(x) - n + 1)]
-    }
-    # Add noise up to +/- 0.01 for each time period
-    ndff_n <- ndff + 0.5*rnorm(N, sd=0.01)
-    time = nt;
-    
-  } else{
-    ndff_n <- dff; time = t;
-  }
-  
-  # The inverses
-  indff = fft(ndff_n/length(ndff_n), inverse = TRUE)
-  #idff = fft(dff/N, inverse = TRUE) # reconstructed input time series
-  
-  # Amplitude and phase of inverse
-  amp <- Mod(indff); pha <- Arg(indff); 
-  
-  # Frequency
-  freq <- (1:(length(ndff_n)))*(omega)/(2*length(ndff_n))
-  
-  ret = data.frame(time = time, y = Mod(indff), freq = freq, amplitude = amp, phase = pha)
-  return(ret)
-}
 
 # Function to convert from polar to cartesian coordinates
 polar2cart <- function(r, theta) {
@@ -86,23 +56,26 @@ cart2polar <- function(x, y) {
 ######################################################
 
 # Function to calculate peak/nadir timings and values 
-peaktimecalc <- function(mod, omega){
+peaktimecalc <- function(mod, omega, vals_con, transform_ln){
   
   # New data for which to predict
-  preddf <- data.frame(INDEX=seq(1, omega, by=0.125))
+  preddf <- data.frame(INDEX=seq(0, omega, by=omega/100))
   preddf <- preddf %>%
     mutate(SIN2PI = sin(2*pi*(1/omega)*INDEX),
            COS2PI = cos(2*pi*(1/omega)*INDEX),
            SIN4PI = sin(4*pi*(1/omega)*INDEX),
            COS4PI = cos(4*pi*(1/omega)*INDEX)) %>%
-    mutate(INDEX2 = INDEX^2, INDEX3 = INDEX^3) 
+    mutate(INDEX2 = INDEX^2, INDEX3 = INDEX^3)
+
+  preddf <- preddf %>%
+    # Keep fields if they are present in model
+    select( any_of( names(mod$coefficients) ) ) %>% 
+    # Add prediction from model
+    mutate(PRED = as.vector(predict(mod, newdata=preddf, type="response"))) 
   
   if(any(grepl("SIN4PI", mod$call))){
     
-    # Ref: https://stackoverflow.com/questions/6836409/finding-local-maxima-and-minima
     preddf <- preddf %>%
-      # Develop a predictive model
-      mutate(PRED = as.vector(predict(mod, newdata=preddf, type="response"))) %>%
       # Calculate derivatives
       mutate(dydx_1 = c(NA, diff(PRED)), dydx_2 = c(NA, NA, diff(diff(PRED)))) %>% 
       # Calculate peak values
@@ -115,43 +88,89 @@ peaktimecalc <- function(mod, omega){
     nadirtiming <- preddf %>% filter(MINIMA==1) %>% arrange(-PRED) %>% pull(INDEX)
     nadirvalue <- preddf %>% filter(MINIMA==1) %>% arrange(-PRED) %>% pull(PRED)
     
-    fft_pred <- nff(preddf$PRED, upsample=F, n=0)
+    # Calculate amplitudes from simulated time series ----------------
+    fitted_model <- auto.arima(vals_con)
+    
+    # Simulate the time series and extract amplitudes several times
+    SIMS <- lapply(1:99, function(z){
+      
+      #print(paste0("Running simulation: ", z))
+      
+      # Simulate one full cycle
+      vals_sim <- simulate(fitted_model, n.sim = 3*length(vals_con))
+      N <- length(vals_sim)
+      
+      fft_sim <- data.frame(coef = fft(vals_sim / N, inverse=T), 
+                            freqindex = 1:length(vals_sim),
+                            freq = (1:N)*(omega)/(2*N)) %>% 
+        mutate(value_original = vals_sim,
+               amp = Mod(coef), freqindex = 1:N,
+               value = Re(coef), time = freqindex %% omega) %>% 
+        slice(-1) %>% 
+        mutate(SIM = z) %>% 
+        # Calculate derivatives
+        mutate(dydx_1 = c(NA, diff(amp)), dydx_2 = c(NA, NA, diff(diff(amp)))) %>% 
+        # Calculate peak values
+        mutate(PEAKS = c(NA, (diff(sign(diff(amp))<0)), NA )) %>% 
+        mutate(MAXIMA = ifelse(PEAKS==1, 1, 0), MINIMA = ifelse(PEAKS==-1, 1, 0)) 
+      
+      return(fft_sim)
+      
+    }) %>% bind_rows()
+    
+    AMP <- SIMS %>% group_by(SIM) %>% 
+      summarize(MEAN = mean(amp, na.rm=T),
+                RANGE = abs(max(amp) - min(amp)),
+                SD = sd(amp, na.rm=T))
     
     pt <- data.frame(MODEL = "4PI", 
                      PEAKTIMING = peaktiming[1], PEAKVALUE = peakvalue[1],
                      NADIRTIMING = nadirtiming[1], NADIRVALUE = nadirvalue[1],
                      PEAK2TIMING = peaktiming[2], PEAK2VALUE = peakvalue[2],
                      NADIR2TIMING = nadirtiming[2], NADIR2VALUE = nadirvalue[2],
-                     AMPLITUDE = max(fft_pred$amplitude) - min(fft_pred$amplitude),
-                     AMP_CI = sd(fft_pred$amplitude)) 
+                     AMPLITUDE = mean(AMP$MEAN), AMP_CI = mean(AMP$SD))
     
   } else {
     
     M <- (omega/(2*pi))
-    coefs<-as.vector(coef(mod))
-    intercept<-coefs[grep("(Intercept)", names(coef(mod)))[1]] 
-    coef_sin<-coefs[grep("sin", names(coef(mod)), ignore.case=TRUE)[1]] 
-    coef_cos<-coefs[grep("cos", names(coef(mod)), ignore.case=TRUE)[1]] 
+    
+    # Extract main variables
+    coefs <- tidy(mod)
+    
+    intercept <- coefs %>% filter(term=="(Intercept)") %>% pull(estimate)
+    
+    coef_sin <- coefs %>% filter(term=="SIN2PI") %>% pull(estimate)
+    sigma_sin <- coefs %>% filter(term=="SIN2PI") %>% pull(std.error)
+    
+    coef_cos <- coefs %>% filter(term=="COS2PI") %>% pull(estimate)
+    sigma_cos <- coefs %>% filter(term=="COS2PI") %>% pull(std.error)
+    
+    sigma_sincos <- deltaMethod(mod, "SIN2PI+COS2PI", vcov = vcov(mod))$SE
     
     # Amplitude
     amp <- sqrt(coef_sin^2 + coef_cos^2)
     
     # CI of amplitude
-    sd_sin <- sd(timedf$SIN2PI) 
-    sd_cos <- sd(timedf$COS2PI)
-    sd_sincos <- sd(timedf$SIN2PI * timedf$COS2PI)
+    var_amp <- ((coef_cos^2 + sigma_cos^2) + (coef_sin^2 + sigma_sin^2) + 
+                  (2* sigma_sincos * coef_sin * coef_cos)) / (coef_sin^2 + coef_cos^2)
     
-    var_amp <- ((coef_cos^2 + sd_cos^2) + (coef_sin^2 + sd_sin^2) + (2* sd_sincos * beta_sin * beta_cos)) / (beta_sin^2 + beta_cos^2)
-    ci_amp <- 1.96 * sqrt(var_amp)
+    if(transform_ln){
+      ci_amp <- log(1.96) * sqrt(var_amp)
+    } else{
+      ci_amp <- 1.96 * sqrt(var_amp)
+    }
+    
+    print(amp); print(ci_amp);
     
     # Angle
     ang <- coef_sin / coef_cos
     
     # Phi or Shift 
-    shift <- atan(ang)
+    shift <- -atan(ang)
     
     # Variance of phi
-    var_phi <- ( (coef_cos^2 + sd_sin^2) + (coef_sin^2 + sd_cos^2) - (2* sd_sincos * beta_sin * beta_cos) ) / ( (beta_sin^2 + beta_cos^2)^2 )
+    var_phi <- ( (coef_cos^2 + sigma_sin^2) + (coef_sin^2 + sigma_cos^2) - 
+                   (2* sigma_sincos * coef_sin * coef_cos)^2 ) / ( (coef_sin^2 + coef_cos^2)^2 )
     
     # Peak Timing
     peaktiming <- ifelse(coef_cos < 0, ((shift + pi)*M),
@@ -172,7 +191,7 @@ peaktimecalc <- function(mod, omega){
     nadirvalue = intercept - amp
     
     # Intensity 
-    intensity = (intercept + amplitude) - (intercept - amplitude)
+    intensity = (intercept + amp) - (intercept - amp)
     var_intensity = 4*(var_amp)
     ci_intensity = intensity + (1.96 * sqrt((var_intensity)))
     
@@ -181,7 +200,7 @@ peaktimecalc <- function(mod, omega){
                       NADIRTIMING = nadirtiming, NADIRVALUE = nadirvalue,
                       PEAK2TIMING = NA, PEAK2VALUE = NA,
                       NADIR2TIMING = NA, NADIR2VALUE = NA,
-                      AMPLITUDE = amp, AMP_CI = amp_ci, 
+                      AMPLITUDE = amp, AMP_CI = ci_amp, 
                       INTENSITY = intensity, INTENSITY_CI = ci_intensity)
     
   }
@@ -217,7 +236,8 @@ seasonalitycalc <- function(df, tfield, omega, outcome, transform_ln = TRUE){
              SIN2PI = sin(2*pi*(1/omega)*INDEX), 
              COS2PI = cos(2*pi*(1/omega)*INDEX),
              SIN4PI = sin(4*pi*(1/omega)*INDEX), 
-             COS4PI = cos(4*pi*(1/omega)*INDEX))
+             COS4PI = cos(4*pi*(1/omega)*INDEX)) %>%
+      mutate(YEAR = year(DATE))
     
     # Merge sequence into time series
     timedf <- data.frame(DATE = timefield, value = df %>% pull(outcome)) %>% 
@@ -237,7 +257,8 @@ seasonalitycalc <- function(df, tfield, omega, outcome, transform_ln = TRUE){
              SIN2PI = sin(2*pi*(1/omega)*INDEX), 
              COS2PI = cos(2*pi*(1/omega)*INDEX),
              SIN4PI = sin(4*pi*(1/omega)*INDEX), 
-             COS4PI = cos(4*pi*(1/omega)*INDEX))
+             COS4PI = cos(4*pi*(1/omega)*INDEX)) %>%
+      mutate(YEAR = year(DATE))
     
     # Merge sequence into time series
     timedf <- data.frame(DATE = timefield, value = df %>% pull(outcome)) %>% 
@@ -247,145 +268,195 @@ seasonalitycalc <- function(df, tfield, omega, outcome, transform_ln = TRUE){
   }
   
   # Log transform if needed
-  if(isTRUE(transform_ln)){
+  if(transform_ln){
     timedf <- timedf %>% mutate(value = log(value))
   }
-    
-  # 1. Impute missing values and create time series -----------
+  
+  ######################################################
+  # PERIODICITY ASSESSMENT #############################
+  ######################################################
+  
+  # 1. Create time series for complete cycles -----------
   vals <- ts(timedf$value,
              start = c(year(timedf$DATE[1]), month(timedf$DATE[1])),
              deltat = 1/omega)
   
-  vals_filled <- na_seadec(vals, find_frequency = T) # in log scale
-  N <- length(vals_filled)
+  N <- length(vals)
   
-  # 2. Detrend data ---------------
-  
-  # Detrending removes the first eigenvector which best captures complex trend.
-  # This step is retained as we are interested in seasonality
-  
-  vals_stl <- stl(vals_filled, s.window='periodic')
-  
-  # Add these values back into dataset
-  timedf$seasonal <- vals_stl$time.series[,1]
-  timedf$trend <- vals_stl$time.series[,2]
-  timedf$remainder <- vals_stl$time.series[,3]
-  timedf$detrend <- vals_filled - vals_stl$time.series[,2]
-  
-  vals_detrend <- vals_filled - vals_stl$time.series[,2] # in log scale
-  
+  # 2. Create time series only for complete cycles ----------
+  # Subset to complete years
+  year_totals <- timedf %>%
+    drop_na(value) %>%
+    group_by(YEAR) %>% tally() %>% ungroup() %>%
+    # Subset only complete observations
+    filter(n==omega) %>% pull(YEAR)
+
+  if(length(year_totals)==0){
+    return(NA)
+  } else {
+    vals_con <- ts(timedf %>% filter(YEAR %in% year_totals) %>% pull(value),
+                   start = c(year(timedf$DATE[1]), month(timedf$DATE[1])),
+                   deltat = 1/omega)
+    
+    if(length(vals_con)<=omega){
+      return(NA)
+    } else{
+ 
   # 3. Spectral Analysis ----------------------
   
-  # s <- spec.mtm(vals_detrend, Ftest = TRUE, jackknife = T)
+  # Use complete cycles to look at spectra
+  # s <- spec.mtm(vals_con, Ftest = TRUE, jackknife = T)
   # 
   # # calculate spectrum
   # spec1 <- s$spec[1]
-  # s.df <- data.frame(freq = s$freq,  spec = s$spec, spec_scaled = s$spec/spec1, 
+  # s.df <- data.frame(freq = s$freq,  spec = s$spec, spec_scaled = s$spec/spec1,
   #                    f = s$mtm$Ftest, var_jk = s$mtm$jk$varjk,
   #                    ci_lower = s$mtm$jk$lowerCI, ci_upper = s$mtm$jk$upperCI) %>%
   #   # Multiply spectra by 2
   #   #mutate(spec = 2*spec) %>%
   #   # Remove zero value as it is meaningless
   #   dplyr::filter(freq!=0) %>%
-  #   # Convert from frequency to periods 
+  #   # Convert from frequency to periods
   #   mutate(period = freq / (1/omega),
   #          time = round(period - (omega * (period %/% omega)), 0) )
   # 
-  # # Which frequencies are statistically significant?
-  # sig_months <- s.df %>% dplyr::filter(f <= 0.05)
+  #   # Which frequencies are statistically significant?
+  #   sig_months <- s.df %>% dplyr::filter(f <= 0.05)
+
+  # Are same frequencies statistically significant across cycles?
+  # ggplot(data = s.df, aes(x=period, y=spec)) + geom_line() +
+  #   geom_vline(xintercept = s.df %>% filter(f <= 0.05) %>% pull(period), lty=2, col='red') +
+  #   scale_x_continuous("Period (years)", breaks = seq(0, length(vals)*2, by=omega)) +
+  #   scale_y_log10()
+  # yrs.period <- rev(c(1/12, 1/10, 1/8, 1/6, 1/5, 1/4, 1/3, 0.5, 1, 2))
+  # yrs.labels <- rev(c("1/12", "1/10", "1/8", "1/6", "1/5", "1/4", "1/3", "1/2", "1", "2"))
+  # yrs.freqs <- (1/yrs.period) * (1/omega)  # Convert annual period --> annual freq --> monthly freq
+  # ggplot(data = s.df %>% filter(freq>1/12), aes(x=freq, y=spec)) + geom_line() +
+  #   geom_vline(xintercept = s.df %>% filter(f <= 0.05) %>% pull(freq), lty=2, col='red') +
+  #   scale_x_log10("Period (years)", breaks = yrs.freqs, labels = yrs.labels) +
+  #   scale_y_log10()
+
+  # 4. Singular Spectrum Analysis -------------------
   # 
-  # # Are same frequencies statistically significant across cycles?
-  # # ggplot(data = s.df, aes(x=period, y=spec)) + geom_line() +
-  # #   geom_vline(xintercept = s.df %>% filter(f <= 0.05) %>% pull(period), lty=2, col='red') +
-  # #   scale_x_continuous("Period (years)", breaks = seq(0, length(vals_detrend)*2, by=omega)) +
-  # #   scale_y_log10()
-  # # 
-  # # yrs.period <- rev(c(1/12, 1/10, 1/8, 1/6, 1/5, 1/4, 1/3, 0.5, 1, 2))
-  # # yrs.labels <- rev(c("1/12", "1/10", "1/8", "1/6", "1/5", "1/4", "1/3", "1/2", "1", "2"))
-  # # yrs.freqs <- (1/yrs.period) * (1/omega)  # Convert annual period --> annual freq --> monthly freq
-  # # ggplot(data = s.df %>% filter(freq>1/12), aes(x=freq, y=spec)) + geom_line() +
-  # #   geom_vline(xintercept = s.df %>% filter(f <= 0.05) %>% pull(freq), lty=2, col='red') +
-  # #   scale_x_log10("Period (years)", breaks = yrs.freqs, labels = yrs.labels) +
-  # #   scale_y_log10()
+  # vals_ssa <- ssa(vals_con)
+  # 
+  # # plot(vals_ssa, type='vectors') # Plot eigenvectors
+  # # plot(vals_ssa, type='series') # Plot reconstructed series
+  # 
+  # # Dominant seasonality (where present) is captured in first eigenvector pairs
+  # EigenDF <- data.frame(vals_ssa$U) %>%
+  #   rename_all(~gsub('X', 'E', .x)) %>% 
+  #   mutate(time = 1:nrow(.)) 
+  # 
+  # # ggplot(EigenDF, aes(x=E4, y=E5)) + geom_point(lwd=2)
+  # 
+  # # Loop over first 10 eigenvector pairs to detect potential seasonality
+  # num_eigens <- grep("E", names(EigenDF))
+  # Esp <- lapply(2:(length(num_eigens)-1), function(e){
+  #   
+  #   print(paste0("Processing eigenvector pairs ", e, " and ", e+1))
+  #   
+  #   ex <- EigenDF %>% pull(!!paste0("E", e))
+  #   ey <- EigenDF %>% pull(!!paste0("E", e+1))
+  #   
+  #   p <- ggplot(data = data.frame(ex = ex, ey = ey), aes(x=ex, y=ey)) + geom_point(lwd=2)
+  #   print(p)
+  #   
+  #   # Convert Cartesian spiral to polar coordinates
+  #   e_p <- cart2polar(ex, ey) %>% mutate(index = 1:nrow(.)) %>%
+  #     mutate(theta_abs = abs(theta)) %>%
+  #     # Calculate jumps from derivatives
+  #     mutate(JUMPS = c(NA, (diff(sign(diff(theta_abs))<0)), NA ))
+  #   
+  #   # Count how many spirals are present based on # of jumps in theta
+  #   n_spirals <- e_p %>% 
+  #     filter(JUMPS!=0) %>% 
+  #     # Make sure jump is sustained for at least half cycle 
+  #     mutate(TDIFF = c(diff(index), NA) ) %>%
+  #     filter(TDIFF > omega/2 ) %>% 
+  #     nrow()
+  #   
+  #   # Assign shape index to distinguish shapes into groups
+  #   coords <- data.frame(ex, ey, e_p) %>% 
+  #     mutate(JUMPS = ifelse(is.na(JUMPS)|JUMPS<0, 0, JUMPS)) %>%
+  #     mutate(GID = cumsum(JUMPS) + JUMPS*0)
+  # 
+  #   # Calculate approximate centroid and area of each spiral
+  #   if(n_spirals > 0){
+  # 
+  #     # Create shape
+  #     spiralshape <- st_as_sf(coords, coords = c("ex", "ey"), crs = 4326) %>%
+  #       group_by(GID) %>%
+  #       tally() %>% 
+  #       summarise(geometry = st_combine(geometry)) %>%
+  #       st_cast("POLYGON") %>%
+  #       ungroup() %>% 
+  #       mutate(A = st_area(.), C = st_centroid(.)) %>%
+  #       # Look only at shapes defined by # of spirals
+  #       arrange(-A) %>% slice(1:n_spirals) %>% 
+  #       # Convert from polar to cartesian coordinates
+  #       mutate(C_rad = st_coordinates(C)[,1],
+  #              C_theta = st_coordinates(C)[,2]) %>%
+  #       mutate(C_x = polar2cart(C_rad, C_theta)[,1],
+  #              C_y = polar2cart(C_rad, C_theta)[,2])
+  #     
+  #     # Phase shift in time units
+  #     if(transform_ln){
+  #       phaseshift <- diff(exp(spiralshape %>% st_drop_geometry() %>% pull(C_x)))[1]
+  #     } else{
+  #       phaseshift <- diff(spiralshape %>% st_drop_geometry() %>% pull(C_x))[1]
+  #     }
+  #   
+  #   } else{
+  #     phaseshift <- NA
+  #   }
+  #   
+  #   return( data.frame(EigenPairs = e, 
+  #                      N_Spirals = ceiling(n_spirals/2),
+  #                      Phase = phaseshift) )
+  #   
+  # })
+  # E_n <- Esp %>% bind_rows() %>% filter(N_Spirals > 0)
+  # 
+  # print(paste0(paste(sort(unique(E_n$N_Spirals)), collapse = ", "), " spirals found!"))
+  # 
+  # # Add sum of eigenvectors as new column
+  # # EigenDF <- EigenDF %>% mutate(SUM = rowSums(select(., starts_with("E"), -E1)))
   
-  # 4. Upsample original signal using FFT + 10th harmonic for best fit --------------------
-  vals_up <- nff(vals_filled, n=10, upsample=TRUE) 
+  ######################################################
+  # MODEL FIT ASSESSMENT #############################
+  ######################################################
   
-  # Create new signal from upsampled time series
-  vals_up <- ts(vals_up$y,
-                start = c(year(timedf$DATE[1]), month(timedf$DATE[1])),
-                frequency = omega/0.125)
+  m1 <- glm(value ~ SIN2PI + COS2PI + INDEX + INDEX2 + INDEX3, data = timedf)
+  m2 <- glm(value ~ SIN2PI + COS2PI + SIN4PI + COS4PI + 
+              INDEX + INDEX2 + INDEX3, data = timedf)
   
-  # 5. Singular Spectrum Analysis -------------------
+  # Are 4pi terms significant?
+  psig <- tidy(m2) %>% filter(grepl("4PI", term)) %>% filter(p.value<0.05) %>% nrow()
   
-  vals_ssa <- ssa(vals_up)
-  
-  # plot(vals_ssa, type='vectors') # Plot eigenvectors
-  # plot(vals_ssa, type='series') # Plot reconstructed series
-  
-  # Dominant seasonality (where present) is captured in first eigenvectors
-  EigenDF_Wide <- data.frame(vals_ssa$U) %>%
-    rename_all(~gsub('X', 'E', .x)) %>% 
-    mutate(time = 1:nrow(.)) 
-  
-  # ggplot(EigenDF_Wide, aes(x=E4, y=E5)) + geom_point(lwd=2)
-  
-  EigenDF_Long <- EigenDF_Wide %>% reshape2::melt(c("time"))
-  
-  # ggplot(EigenDF_Long %>% filter(variable %in% c("E1", "E2")), 
-  #        aes(x=time, y=value, group=variable, col=variable)) + 
-  #   geom_line(lwd=2)
-  
-  # Loop over first 10 eigenvector pairs to detect potential seasonality
-  Esp <- lapply(1:10, function(e){
+  # Compare models
+  m_pref <- glance(m1) %>% mutate(MODEL = "2PI") %>% 
+    bind_rows(glance(m2) %>% mutate(MODEL = "4PI")) %>% 
+    melt(c("MODEL")) %>%
+    filter(variable=="BIC") %>% 
+    slice(which.min(value)) %>%
+    pull(MODEL)
     
-    print(paste0("Processing eigenvector pairs ", e, " and ", e+1))
-    
-    ex <- EigenDF_Wide %>% pull(!!paste0("E", e))
-    ey <- EigenDF_Wide %>% pull(!!paste0("E", e+1))
-    
-    # ggplot(data = data.frame(ex = ex, ey = ey), aes(x=ex, y=ey)) + geom_point(lwd=2)
-    
-    # Convert Cartesian spiral to polar coordinates
-    e_p <- cart2polar(ex, ey) %>% mutate(index = 1:nrow(.))
-    
-    # Count how many spirals are present based on # of jumps in theta
-    n_spirals <- e_p %>%
-      mutate(theta = abs(theta)) %>%
-      # Calculate jumps
-      mutate(JUMPS = c(NA, (diff(sign(diff(theta))<0)), NA )) %>% 
-      filter(JUMPS!=0) %>% 
-      # Make sure jump is sustained for at least a quarter
-      mutate(TDIFF = c(diff(index), NA) ) %>%
-      filter(TDIFF > (omega/2/0.125) ) %>% 
-      nrow()
-    
-    return( data.frame(EigenPairs = e, N_Spirals = ceiling(n_spirals/2)) )
-    
-  }) %>%
-    bind_rows() %>%
-    filter(N_Spirals > 0)
-  
-  print(paste0(paste(sort(unique(Esp$N_Spirals)), collapse = ", "), " spirals found!"))
-  
-  # 6. Generate harmonic regression model ------------------
-  
-  if(max(Esp$N_Spirals)>1){
-    m_pref <- glm(detrend ~ SIN2PI + COS2PI + SIN4PI + COS4PI + 
-                    INDEX + INDEX2 + INDEX3, 
-                  data = timedf)
-  } else if(max(Esp$N_Spirals)==1){
-    m_pref <- glm(detrend ~ SIN2PI + COS2PI + INDEX + INDEX2 + INDEX3, 
-                  data = timedf)
+  if(m_pref=="4PI" & psig>0){
+    m_pref <- m2
+  } else {
+    m_pref <- m1
   }  
   
-  # 7. Calculate peak timings --------------------
-
+  ######################################################
+  # HARMONIC CHARACTERISTICS CALCULATION ###############
+  ######################################################
+  
   if( exists("m_pref") ){
     
-    PT <- peaktimecalc(m_pref, omega)
+    PT <- peaktimecalc(m_pref, omega, vals_con, transform_ln)
     
-    if(isTRUE(transform_ln)){
+    if(transform_ln){
       PT[[1]] <- PT[[1]] %>% 
         mutate(PEAKVALUE = exp(PEAKVALUE), NADIRVALUE = exp(NADIRVALUE),
                PEAK2VALUE = exp(PEAK2VALUE), NADIR2VALUE = exp(NADIR2VALUE))
@@ -398,4 +469,7 @@ seasonalitycalc <- function(df, tfield, omega, outcome, transform_ln = TRUE){
   }
 
   # End function
+  }
+ # End else to return nulls 
+  }
 }
