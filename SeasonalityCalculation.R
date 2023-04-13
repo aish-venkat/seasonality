@@ -1,9 +1,9 @@
 # Function to calculate harmonic peaks and nadirs from weekly, monthly, or daily time series
-# Last Updated: April 6, 2023
+# Last Updated: April 12, 2023
 
 # Use pacman package to load/install needed packages
 if (!require("pacman")) install.packages("pacman")
-pacman::p_load(tidyverse, reshape2, multitaper, broom, Rssa, sf, forecast, numDeriv, car)
+pacman::p_load(tidyverse, reshape2, multitaper, broom, Rssa, sf)
 
 ######################################################
 # REFERENCES #########################################
@@ -56,22 +56,27 @@ cart2polar <- function(x, y) {
 ######################################################
 
 # Function to calculate peak/nadir timings and values 
-peaktimecalc <- function(mod, omega, vals_con, transform_ln){
+peaktimecalc <- function(mod, f, omega, vals_con, timedf, modeltype){
   
   # New data for which to predict
-  preddf <- data.frame(INDEX=seq(0, omega, by=omega/100))
+  preddf <- data.frame(INDEX=seq(1, f, by=f/100))
   preddf <- preddf %>%
-    mutate(SIN2PI = sin(2*pi*(1/omega)*INDEX),
-           COS2PI = cos(2*pi*(1/omega)*INDEX),
-           SIN4PI = sin(4*pi*(1/omega)*INDEX),
-           COS4PI = cos(4*pi*(1/omega)*INDEX)) %>%
-    mutate(INDEX2 = INDEX^2, INDEX3 = INDEX^3)
+    mutate(SIN2PI = sin(2*pi*omega*INDEX),
+           COS2PI = cos(2*pi*omega*INDEX),
+           SIN4PI = sin(4*pi*omega*INDEX),
+           COS4PI = cos(4*pi*omega*INDEX)) %>%
+    mutate(INDEX2 = INDEX^2, INDEX3 = INDEX^3) 
 
+  ggplot(preddf, aes(x=INDEX, y=PRED)) + geom_line() + scale_x_continuous(breaks=1:12)
+  
+  # Remove linear, quadratic, cubic trend from model
+  # such that only seasonal component is retained for plotting
+  mod_notrend <- update(mod, as.formula(paste(c(formula(mod), " - INDEX - INDEX2 - INDEX3"),
+                                              collapse = " ") ) )
+  # Add prediction from no trend model
   preddf <- preddf %>%
-    # Keep fields if they are present in model
-    select( any_of( names(mod$coefficients) ) ) %>% 
-    # Add prediction from model
-    mutate(PRED = as.vector(predict(mod, newdata=preddf, type="response"))) 
+    mutate(PRED = as.vector(predict(mod_notrend, newdata=preddf, type="response")))
+  
   
   if(any(grepl("SIN4PI", mod$call))){
     
@@ -102,10 +107,10 @@ peaktimecalc <- function(mod, omega, vals_con, transform_ln){
       
       fft_sim <- data.frame(coef = fft(vals_sim / N, inverse=T), 
                             freqindex = 1:length(vals_sim),
-                            freq = (1:N)*(omega)/(2*N)) %>% 
+                            freq = (1:N)*(f)/(2*N)) %>% 
         mutate(value_original = vals_sim,
                amp = Mod(coef), freqindex = 1:N,
-               value = Re(coef), time = freqindex %% omega) %>% 
+               value = Re(coef), time = freqindex %% f) %>% 
         slice(-1) %>% 
         mutate(SIM = z) %>% 
         # Calculate derivatives
@@ -132,68 +137,105 @@ peaktimecalc <- function(mod, omega, vals_con, transform_ln){
     
   } else {
     
-    M <- (omega/(2*pi))
-    
-    # Extract main variables
+    # Extract regression estimate
     coefs <- tidy(mod)
     
     intercept <- coefs %>% filter(term=="(Intercept)") %>% pull(estimate)
     
     coef_sin <- coefs %>% filter(term=="SIN2PI") %>% pull(estimate)
-    sigma_sin <- coefs %>% filter(term=="SIN2PI") %>% pull(std.error)
-    
     coef_cos <- coefs %>% filter(term=="COS2PI") %>% pull(estimate)
-    sigma_cos <- coefs %>% filter(term=="COS2PI") %>% pull(std.error)
     
-    sigma_sincos <- deltaMethod(mod, "SIN2PI+COS2PI", vcov = vcov(mod))$SE
+    # Extract terms from variance-covariance matrix
+    # Own-term variance is on diagonal, other terms are covariances
+    X <- unname(vcov(mod))
+    sigma_sin <- X[2,2]; sigma_cos <- X[3,3]; sigma_sincos <- X[2,3];
+
+    # Peak timing (same across specifications) -----------
     
-    # Amplitude
-    amp <- sqrt(coef_sin^2 + coef_cos^2)
-    
-    # CI of amplitude
-    var_amp <- ((coef_cos^2 + sigma_cos^2) + (coef_sin^2 + sigma_sin^2) + 
-                  (2* sigma_sincos * coef_sin * coef_cos)) / (coef_sin^2 + coef_cos^2)
-    
-    if(transform_ln){
-      ci_amp <- log(1.96) * sqrt(var_amp)
-    } else{
-      ci_amp <- 1.96 * sqrt(var_amp)
-    }
-    
-    print(amp); print(ci_amp);
+    # Define cycle
+    period <- f/(2*pi);
     
     # Angle
     ang <- coef_sin / coef_cos
     
     # Phi or Shift 
+    #shift <- atan2(coef_cos, coef_sin) # range in -pi to pi values
     shift <- -atan(ang)
     
     # Variance of phi
-    var_phi <- ( (coef_cos^2 + sigma_sin^2) + (coef_sin^2 + sigma_cos^2) - 
-                   (2* sigma_sincos * coef_sin * coef_cos)^2 ) / ( (coef_sin^2 + coef_cos^2)^2 )
+    var_phi <- ( (coef_sin^2 * sigma_cos) + (coef_cos^2 * sigma_sin) - 
+                   (2* sigma_sincos * coef_sin * coef_cos) )    / ( (coef_sin^2 + coef_cos^2)^2 )
     
     # Peak Timing
-    peaktiming <- ifelse(coef_cos < 0, ((shift + pi)*M),
-                         ifelse(coef_cos > 0 & coef_sin > 0, (shift*M),
-                                ((shift + (2 * pi))*M) ))
-    
+    peaktiming <- ifelse(coef_sin>0 & coef_cos>0, (shift*period),
+                         ifelse(coef_sin>0 & coef_cos<0, (shift+pi)*period,
+                                ifelse(coef_sin<0 & coef_cos<0, (shift+pi)*period,
+                                       ifelse(coef_sin<0 & coef_cos>0, (shift + 2*pi)*period))))
+
     # CI of peak timing
-    ci_peaktiming <- 1.96 * sqrt(var_phi) * (M / (2 * pi))
-    
-    # Peak Value
-    peakvalue = intercept + amp
+    ci_peaktiming <- 1.96 * sqrt(var_phi) * period
     
     # Nadir Timing
     nadirtiming <- ifelse(coef_cos < 0, shift + (pi/2),
                           ifelse(coef_cos > 0 & coef_sin > 0, (shift/2), (shift + (2 * pi))/2 ))
     
-    # Nadir Value
-    nadirvalue = intercept - amp
-    
-    # Intensity 
-    intensity = (intercept + amp) - (intercept - amp)
-    var_intensity = 4*(var_amp)
-    ci_intensity = intensity + (1.96 * sqrt((var_intensity)))
+    # Values different by model specification ------------
+    if(modeltype == "loglinear"){
+      
+      # Amplitude
+      amp <- exp(sqrt(coef_sin^2 + coef_cos^2))
+      
+      # CI of amplitude
+      var_amp <- ((coef_cos^2 * sigma_cos) + (coef_sin^2 * sigma_sin) + 
+                    (2* sigma_sincos * coef_sin * coef_cos)) / (coef_sin^2 + coef_cos^2)
+      var_amp <- (amp^2) * var_amp
+      
+      ci_amp <- 1.96 * sqrt(var_amp)
+      
+      # Peak Value
+      peakvalue = exp(intercept) + amp
+      
+      # Nadir Value
+      nadirvalue = exp(intercept) - amp
+      
+      # Absolute Intensity 
+      intensity = peakvalue - nadirvalue
+      var_intensity = 4*(var_amp)
+      ci_intensity = 1.96 * sqrt((var_intensity))
+      
+      # Variance of relative intensity
+      var_intensity_rel <- ( (exp(2*intercept) / (exp(intercept) - amp)^4) ) * var_intensity
+      
+    } else if(modeltype == "linear"){
+      
+      # Amplitude
+      amp <- sqrt(coef_sin^2 + coef_cos^2)
+      
+      # CI of amplitude
+      var_amp <- ((coef_cos^2 * sigma_cos) + (coef_sin^2 * sigma_sin) + 
+                    (2* sigma_sincos * coef_sin * coef_cos)) / (coef_sin^2 + coef_cos^2)
+      ci_amp <- 1.96 * sqrt(var_amp)
+      
+      # Peak Value
+      peakvalue = intercept + amp
+      
+      # Nadir Value
+      nadirvalue = intercept - amp
+      
+      # Absolute Intensity 
+      intensity = peakvalue - nadirvalue
+      var_intensity = 4*(var_amp)
+      ci_intensity = 1.96 * sqrt((var_intensity))
+      
+      # Variance of relative intensity
+      var_intensity_rel <- ( (intercept^2) / (intercept - amp)^4 )  * var_intensity
+      
+    }
+
+    # Relative Intensity 
+    intensity_rel = peakvalue / nadirvalue
+    var_intensity_rel = 4*(var_amp)
+    ci_intensity_rel = 1.96 * sqrt((var_intensity_rel))
     
     pt <- data.frame(MODEL = "2PI", 
                       PEAKTIMING = peaktiming, PEAKVALUE = peakvalue,
@@ -201,7 +243,8 @@ peaktimecalc <- function(mod, omega, vals_con, transform_ln){
                       PEAK2TIMING = NA, PEAK2VALUE = NA,
                       NADIR2TIMING = NA, NADIR2VALUE = NA,
                       AMPLITUDE = amp, AMP_CI = ci_amp, 
-                      INTENSITY = intensity, INTENSITY_CI = ci_intensity)
+                      INTENSITY = intensity, INTENSITY_CI = ci_intensity,
+                     INTENSITY_REL = intensity_rel, INTENSITY_REL_CI = ci_intensity_rel)
     
   }
   
@@ -211,15 +254,22 @@ peaktimecalc <- function(mod, omega, vals_con, transform_ln){
 }
 
 # Function to calculate seasonality 
-seasonalitycalc <- function(df, tfield, omega, outcome, transform_ln = TRUE){
+seasonalitycalc <- function(df, tfield, f, outcome, modeltype = "loglinear"){
+
+  #tfield <- "DATE"; f <- 12; modeltype = "loglinear"; outcome <- "PRICE_KG";
+  
+  # Identify if variable transformation is needed
+  if(grepl("log", modeltype)){
+    transformation = "log"
+  }
 
   # Process time fields
-  if(omega==12){
-    omegastr = "months"
-  } else if(omega==365 | omega==365.25){
-    omegastr = "days"
-  } else if(omega==52){
-    omegastr = 52
+  if(f==12){
+    fstr = "months"
+  } else if(f==365 | f==365.25){
+    fstr = "days"
+  } else if(f==52 | f==53){
+    fstr = "weeks"
   }
   
   timefield <- df %>% pull(tfield)
@@ -231,12 +281,13 @@ seasonalitycalc <- function(df, tfield, omega, outcome, transform_ln = TRUE){
     maxdate <- max(timefield, na.rm=T); maxdate <- ceiling_date(maxdate, unit='year');
     
     # Create sequential series
-    indexdf <- data.frame(DATE = seq.Date(mindate, maxdate, by=omegastr)) %>%
+    omega <- 1/f
+    indexdf <- data.frame(DATE = seq.Date(mindate, maxdate, by=fstr)) %>%
       mutate(INDEX = 1:nrow(.), INDEX2 = INDEX^2, INDEX3 = INDEX^3,
-             SIN2PI = sin(2*pi*(1/omega)*INDEX), 
-             COS2PI = cos(2*pi*(1/omega)*INDEX),
-             SIN4PI = sin(4*pi*(1/omega)*INDEX), 
-             COS4PI = cos(4*pi*(1/omega)*INDEX)) %>%
+             SIN2PI = sin(2*pi*omega*INDEX), 
+             COS2PI = cos(2*pi*omega*INDEX),
+             SIN4PI = sin(4*pi*omega*INDEX), 
+             COS4PI = cos(4*pi*omega*INDEX)) %>%
       mutate(YEAR = year(DATE))
     
     # Merge sequence into time series
@@ -250,14 +301,14 @@ seasonalitycalc <- function(df, tfield, omega, outcome, transform_ln = TRUE){
     # Create sequential series
     
     mindate <- min(timefield, na.rm=T); maxdate <- max(timefield, na.rm=T)
-    indexdf <- data.frame(DATE = seq(mindate, maxdate, by=omega),
+    indexdf <- data.frame(DATE = seq(mindate, maxdate, by=f),
                           value = df %>% pull(outcome)) %>%
       mutate(INDEX = 1:nrow(.)) %>%
       mutate(INDEX = 1:nrow(.), INDEX2 = INDEX^2, INDEX3 = INDEX^3,
-             SIN2PI = sin(2*pi*(1/omega)*INDEX), 
-             COS2PI = cos(2*pi*(1/omega)*INDEX),
-             SIN4PI = sin(4*pi*(1/omega)*INDEX), 
-             COS4PI = cos(4*pi*(1/omega)*INDEX)) %>%
+             SIN2PI = sin(2*pi*omega*INDEX), 
+             COS2PI = cos(2*pi*omega*INDEX),
+             SIN4PI = sin(4*pi*omega*INDEX), 
+             COS4PI = cos(4*pi*omega*INDEX)) %>%
       mutate(YEAR = year(DATE))
     
     # Merge sequence into time series
@@ -267,8 +318,8 @@ seasonalitycalc <- function(df, tfield, omega, outcome, transform_ln = TRUE){
     
   }
   
-  # Log transform if needed
-  if(transform_ln){
+  # Transform variables if needed
+  if(transformation=="log"){
     timedf <- timedf %>% mutate(value = log(value))
   }
   
@@ -279,7 +330,7 @@ seasonalitycalc <- function(df, tfield, omega, outcome, transform_ln = TRUE){
   # 1. Create time series for complete cycles -----------
   vals <- ts(timedf$value,
              start = c(year(timedf$DATE[1]), month(timedf$DATE[1])),
-             deltat = 1/omega)
+             deltat = 1/f)
   
   N <- length(vals)
   
@@ -289,16 +340,16 @@ seasonalitycalc <- function(df, tfield, omega, outcome, transform_ln = TRUE){
     drop_na(value) %>%
     group_by(YEAR) %>% tally() %>% ungroup() %>%
     # Subset only complete observations
-    filter(n==omega) %>% pull(YEAR)
+    filter(n==f) %>% pull(YEAR)
 
   if(length(year_totals)==0){
     return(NA)
   } else {
     vals_con <- ts(timedf %>% filter(YEAR %in% year_totals) %>% pull(value),
                    start = c(year(timedf$DATE[1]), month(timedf$DATE[1])),
-                   deltat = 1/omega)
+                   deltat = 1/f)
     
-    if(length(vals_con)<=omega){
+    if(length(vals_con)<=f){
       return(NA)
     } else{
  
@@ -317,8 +368,8 @@ seasonalitycalc <- function(df, tfield, omega, outcome, transform_ln = TRUE){
   #   # Remove zero value as it is meaningless
   #   dplyr::filter(freq!=0) %>%
   #   # Convert from frequency to periods
-  #   mutate(period = freq / (1/omega),
-  #          time = round(period - (omega * (period %/% omega)), 0) )
+  #   mutate(period = freq / (1/f),
+  #          time = round(period - (f * (period %/% f)), 0) )
   # 
   #   # Which frequencies are statistically significant?
   #   sig_months <- s.df %>% dplyr::filter(f <= 0.05)
@@ -326,18 +377,18 @@ seasonalitycalc <- function(df, tfield, omega, outcome, transform_ln = TRUE){
   # Are same frequencies statistically significant across cycles?
   # ggplot(data = s.df, aes(x=period, y=spec)) + geom_line() +
   #   geom_vline(xintercept = s.df %>% filter(f <= 0.05) %>% pull(period), lty=2, col='red') +
-  #   scale_x_continuous("Period (years)", breaks = seq(0, length(vals)*2, by=omega)) +
+  #   scale_x_continuous("Period (years)", breaks = seq(0, length(vals)*2, by=f)) +
   #   scale_y_log10()
   # yrs.period <- rev(c(1/12, 1/10, 1/8, 1/6, 1/5, 1/4, 1/3, 0.5, 1, 2))
   # yrs.labels <- rev(c("1/12", "1/10", "1/8", "1/6", "1/5", "1/4", "1/3", "1/2", "1", "2"))
-  # yrs.freqs <- (1/yrs.period) * (1/omega)  # Convert annual period --> annual freq --> monthly freq
+  # yrs.freqs <- (1/yrs.period) * (1/f)  # Convert annual period --> annual freq --> monthly freq
   # ggplot(data = s.df %>% filter(freq>1/12), aes(x=freq, y=spec)) + geom_line() +
   #   geom_vline(xintercept = s.df %>% filter(f <= 0.05) %>% pull(freq), lty=2, col='red') +
   #   scale_x_log10("Period (years)", breaks = yrs.freqs, labels = yrs.labels) +
   #   scale_y_log10()
 
   # 4. Singular Spectrum Analysis -------------------
-  # 
+
   # vals_ssa <- ssa(vals_con)
   # 
   # # plot(vals_ssa, type='vectors') # Plot eigenvectors
@@ -345,39 +396,39 @@ seasonalitycalc <- function(df, tfield, omega, outcome, transform_ln = TRUE){
   # 
   # # Dominant seasonality (where present) is captured in first eigenvector pairs
   # EigenDF <- data.frame(vals_ssa$U) %>%
-  #   rename_all(~gsub('X', 'E', .x)) %>% 
-  #   mutate(time = 1:nrow(.)) 
+  #   rename_all(~gsub('X', 'E', .x)) %>%
+  #   mutate(time = 1:nrow(.))
   # 
   # # ggplot(EigenDF, aes(x=E4, y=E5)) + geom_point(lwd=2)
   # 
   # # Loop over first 10 eigenvector pairs to detect potential seasonality
   # num_eigens <- grep("E", names(EigenDF))
   # Esp <- lapply(2:(length(num_eigens)-1), function(e){
-  #   
+  # 
   #   print(paste0("Processing eigenvector pairs ", e, " and ", e+1))
-  #   
+  # 
   #   ex <- EigenDF %>% pull(!!paste0("E", e))
   #   ey <- EigenDF %>% pull(!!paste0("E", e+1))
-  #   
+  # 
   #   p <- ggplot(data = data.frame(ex = ex, ey = ey), aes(x=ex, y=ey)) + geom_point(lwd=2)
   #   print(p)
-  #   
+  # 
   #   # Convert Cartesian spiral to polar coordinates
   #   e_p <- cart2polar(ex, ey) %>% mutate(index = 1:nrow(.)) %>%
   #     mutate(theta_abs = abs(theta)) %>%
   #     # Calculate jumps from derivatives
   #     mutate(JUMPS = c(NA, (diff(sign(diff(theta_abs))<0)), NA ))
-  #   
+  # 
   #   # Count how many spirals are present based on # of jumps in theta
-  #   n_spirals <- e_p %>% 
-  #     filter(JUMPS!=0) %>% 
-  #     # Make sure jump is sustained for at least half cycle 
+  #   n_spirals <- e_p %>%
+  #     filter(JUMPS!=0) %>%
+  #     # Make sure jump is sustained for at least half cycle
   #     mutate(TDIFF = c(diff(index), NA) ) %>%
-  #     filter(TDIFF > omega/2 ) %>% 
+  #     filter(TDIFF > f/2 ) %>%
   #     nrow()
-  #   
+  # 
   #   # Assign shape index to distinguish shapes into groups
-  #   coords <- data.frame(ex, ey, e_p) %>% 
+  #   coords <- data.frame(ex, ey, e_p) %>%
   #     mutate(JUMPS = ifelse(is.na(JUMPS)|JUMPS<0, 0, JUMPS)) %>%
   #     mutate(GID = cumsum(JUMPS) + JUMPS*0)
   # 
@@ -385,44 +436,43 @@ seasonalitycalc <- function(df, tfield, omega, outcome, transform_ln = TRUE){
   #   if(n_spirals > 0){
   # 
   #     # Create shape
+  #     sf::sf_use_s2(FALSE)
   #     spiralshape <- st_as_sf(coords, coords = c("ex", "ey"), crs = 4326) %>%
   #       group_by(GID) %>%
-  #       tally() %>% 
+  #       tally() %>%
   #       summarise(geometry = st_combine(geometry)) %>%
   #       st_cast("POLYGON") %>%
-  #       ungroup() %>% 
+  #       ungroup() %>%
+  #       st_make_valid() %>%
   #       mutate(A = st_area(.), C = st_centroid(.)) %>%
   #       # Look only at shapes defined by # of spirals
-  #       arrange(-A) %>% slice(1:n_spirals) %>% 
+  #       arrange(-A) %>% slice(1:n_spirals) %>%
   #       # Convert from polar to cartesian coordinates
   #       mutate(C_rad = st_coordinates(C)[,1],
   #              C_theta = st_coordinates(C)[,2]) %>%
   #       mutate(C_x = polar2cart(C_rad, C_theta)[,1],
   #              C_y = polar2cart(C_rad, C_theta)[,2])
-  #     
+  # 
   #     # Phase shift in time units
-  #     if(transform_ln){
+  #     if(transformation == "log"){
   #       phaseshift <- diff(exp(spiralshape %>% st_drop_geometry() %>% pull(C_x)))[1]
   #     } else{
   #       phaseshift <- diff(spiralshape %>% st_drop_geometry() %>% pull(C_x))[1]
   #     }
-  #   
+  # 
   #   } else{
   #     phaseshift <- NA
   #   }
-  #   
-  #   return( data.frame(EigenPairs = e, 
+  # 
+  #   return( data.frame(EigenPairs = e,
   #                      N_Spirals = ceiling(n_spirals/2),
   #                      Phase = phaseshift) )
-  #   
+  # 
   # })
   # E_n <- Esp %>% bind_rows() %>% filter(N_Spirals > 0)
   # 
   # print(paste0(paste(sort(unique(E_n$N_Spirals)), collapse = ", "), " spirals found!"))
-  # 
-  # # Add sum of eigenvectors as new column
-  # # EigenDF <- EigenDF %>% mutate(SUM = rowSums(select(., starts_with("E"), -E1)))
-  
+
   ######################################################
   # MODEL FIT ASSESSMENT #############################
   ######################################################
@@ -454,15 +504,8 @@ seasonalitycalc <- function(df, tfield, omega, outcome, transform_ln = TRUE){
   
   if( exists("m_pref") ){
     
-    PT <- peaktimecalc(m_pref, omega, vals_con, transform_ln)
-    
-    if(transform_ln){
-      PT[[1]] <- PT[[1]] %>% 
-        mutate(PEAKVALUE = exp(PEAKVALUE), NADIRVALUE = exp(NADIRVALUE),
-               PEAK2VALUE = exp(PEAK2VALUE), NADIR2VALUE = exp(NADIR2VALUE))
-    }
-    
-    # ggplot(PT[[2]], aes(x=INDEX, y=exp(PRED))) + geom_line()
+    PT <- peaktimecalc(m_pref, f, omega, vals_con, 
+                       timedf, modeltype = "loglinear")
     
     return(PT)
     
