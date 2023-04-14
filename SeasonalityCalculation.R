@@ -297,7 +297,7 @@ seasonalitycalc <- function(df, tfield, f, outcome, modeltype = "loglinear"){
       arrange(DATE) %>%
       distinct()
     
-  } else if(class(timefiled)=="Numeric"){
+  } else if(class(timefield)=="Numeric"){
     
     # Create sequential series
     
