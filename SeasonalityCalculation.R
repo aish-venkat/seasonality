@@ -295,7 +295,7 @@ seasonalitycalc <- function(df, tfield, f, outcome, modeltype = "loglinear"){
       # Simple summary of outcome by date for time series
       group_by(DATE, INDEX, SIN2PI, COS2PI, SIN4PI, COS4PI) %>% 
       summarize(value = mean(value, na.rm=T)) %>%
-      ungroup()
+      ungroup() %>%
       arrange(DATE) %>%
       distinct()
     
