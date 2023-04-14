@@ -255,10 +255,6 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, modeltype){
 # Function to calculate seasonality 
 seasonalitycalc <- function(df, tfield, f, outcome, modeltype = "loglinear"){
 
-  #tfield <- "DATE"; f <- 12; modeltype = "loglinear"; outcome <- "PRICE_KG";
-  
-  print(paste0("Processing ITEMSERIESID ", df$ITEM_SERIES_ID[1]))
-  
   # Identify if variable transformation is needed
   if(grepl("log", modeltype)){
     transformation = "log"
