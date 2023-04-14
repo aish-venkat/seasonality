@@ -258,6 +258,8 @@ seasonalitycalc <- function(df, tfield, f, outcome, modeltype = "loglinear"){
   # Identify if variable transformation is needed
   if(grepl("log", modeltype)){
     transformation = "log"
+  } else{
+    transformation = "none"
   }
 
   # Process time fields
