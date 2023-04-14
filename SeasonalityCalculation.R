@@ -59,7 +59,7 @@ cart2polar <- function(x, y) {
 peaktimecalc <- function(mod, f, omega, vals_con, timedf, modeltype){
   
   # New data for which to predict
-  preddf <- data.frame(INDEX=seq(1, f, by=f/100))
+  preddf <- data.frame(INDEX=seq(1, f+1, by=f/100))
   preddf <- preddf %>%
     mutate(SIN2PI = sin(2*pi*omega*INDEX),
            COS2PI = cos(2*pi*omega*INDEX),
@@ -67,16 +67,15 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, modeltype){
            COS4PI = cos(4*pi*omega*INDEX)) %>%
     mutate(INDEX2 = INDEX^2, INDEX3 = INDEX^3) 
 
-  ggplot(preddf, aes(x=INDEX, y=PRED)) + geom_line() + scale_x_continuous(breaks=1:12)
-  
   # Remove linear, quadratic, cubic trend from model
-  # such that only seasonal component is retained for plotting
-  mod_notrend <- update(mod, as.formula(paste(c(formula(mod), " - INDEX - INDEX2 - INDEX3"),
+  mod_notrend <- update(mod, as.formula(paste(c(formula(mod), " - INDEX2 - INDEX3"),
                                               collapse = " ") ) )
   # Add prediction from no trend model
   preddf <- preddf %>%
-    mutate(PRED = as.vector(predict(mod_notrend, newdata=preddf, type="response")))
-  
+    mutate(PRED = exp(as.vector(predict(mod_notrend, newdata=preddf, type="response")))) %>%
+    # Adjust index of prediction to match omega for polar plots
+    mutate(INDEX = INDEX-1)
+  ggplot(preddf, aes(x=INDEX, y=PRED)) + geom_line() + scale_x_continuous(breaks=1:12)
   
   if(any(grepl("SIN4PI", mod$call))){
     
@@ -160,7 +159,7 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, modeltype){
     
     # Phi or Shift 
     #shift <- atan2(coef_cos, coef_sin) # range in -pi to pi values
-    shift <- -atan(ang)
+    shift <- atan(ang)
     
     # Variance of phi
     var_phi <- ( (coef_sin^2 * sigma_cos) + (coef_cos^2 * sigma_sin) - 
@@ -258,6 +257,8 @@ seasonalitycalc <- function(df, tfield, f, outcome, modeltype = "loglinear"){
 
   #tfield <- "DATE"; f <- 12; modeltype = "loglinear"; outcome <- "PRICE_KG";
   
+  print(paste0("Processing ITEMSERIESID ", df$ITEM_SERIES_ID[1]))
+  
   # Identify if variable transformation is needed
   if(grepl("log", modeltype)){
     transformation = "log"
@@ -320,7 +321,10 @@ seasonalitycalc <- function(df, tfield, f, outcome, modeltype = "loglinear"){
   
   # Transform variables if needed
   if(transformation=="log"){
-    timedf <- timedf %>% mutate(value = log(value))
+    timedf <- timedf %>% mutate(value = log(value)) %>%
+      # Replace -Inf with NA
+      mutate(value = ifelse(is.infinite(value), NA, value))
+    
   }
   
   ######################################################
@@ -348,7 +352,7 @@ seasonalitycalc <- function(df, tfield, f, outcome, modeltype = "loglinear"){
     vals_con <- ts(timedf %>% filter(YEAR %in% year_totals) %>% pull(value),
                    start = c(year(timedf$DATE[1]), month(timedf$DATE[1])),
                    deltat = 1/f)
-    
+    # At least two full cycles
     if(length(vals_con)<=f){
       return(NA)
     } else{
@@ -476,13 +480,17 @@ seasonalitycalc <- function(df, tfield, f, outcome, modeltype = "loglinear"){
   ######################################################
   # MODEL FIT ASSESSMENT #############################
   ######################################################
+      
+  # Remove any infinite values from timedf
+  timedf <- timedf %>% filter(!is.na(value) & !is.infinite(value))
   
   m1 <- glm(value ~ SIN2PI + COS2PI + INDEX + INDEX2 + INDEX3, data = timedf)
   m2 <- glm(value ~ SIN2PI + COS2PI + SIN4PI + COS4PI + 
               INDEX + INDEX2 + INDEX3, data = timedf)
   
   # Are 4pi terms significant?
-  psig <- tidy(m2) %>% filter(grepl("4PI", term)) %>% filter(p.value<0.05) %>% nrow()
+  psig_4 <- tidy(m2) %>% filter(grepl("4PI", term)) %>% filter(p.value<0.05) %>% nrow()
+  psig_2 <- tidy(m1) %>% filter(grepl("2PI", term)) %>% filter(p.value<0.05) %>% nrow()
   
   # Compare models
   m_pref <- glance(m1) %>% mutate(MODEL = "2PI") %>% 
@@ -492,23 +500,27 @@ seasonalitycalc <- function(df, tfield, f, outcome, modeltype = "loglinear"){
     slice(which.min(value)) %>%
     pull(MODEL)
     
-  if(m_pref=="4PI" & psig>0){
+  if(m_pref=="4PI" & psig_4>0){
     m_pref <- m2
-  } else {
+  } else if(m_pref=="2PI" & psig_2>0){
     m_pref <- m1
-  }  
+  } else{
+    m_pref <- NA
+  } 
   
   ######################################################
   # HARMONIC CHARACTERISTICS CALCULATION ###############
   ######################################################
   
-  if( exists("m_pref") ){
+  if( !all(is.na(m_pref)) ){
     
     PT <- peaktimecalc(m_pref, f, omega, vals_con, 
                        timedf, modeltype = "loglinear")
     
     return(PT)
     
+  } else{
+    return(NA)
   }
 
   # End function
