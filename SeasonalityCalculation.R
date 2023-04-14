@@ -56,7 +56,7 @@ cart2polar <- function(x, y) {
 ######################################################
 
 # Function to calculate peak/nadir timings and values 
-peaktimecalc <- function(mod, f, omega, vals_con, timedf, modeltype){
+peaktimecalc <- function(mod, f, omega, vals_con, timedf, modeltype, transformation){
   
   # New data for which to predict
   preddf <- data.frame(INDEX=seq(1, f+1, by=f/100))
@@ -513,7 +513,7 @@ seasonalitycalc <- function(df, tfield, f, outcome, modeltype = "loglinear"){
   if( !all(is.na(m_pref)) ){
     
     PT <- peaktimecalc(m_pref, f, omega, vals_con, 
-                       timedf, modeltype = "loglinear")
+                       timedf, modeltype=modeltype, transformation)
     
     return(PT)
     
