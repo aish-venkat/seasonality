@@ -3,7 +3,7 @@
 
 # Use pacman package to load/install needed packages
 if (!require("pacman")) install.packages("pacman")
-pacman::p_load(tidyverse, reshape2, multitaper, broom, Rssa, sf)
+pacman::p_load(tidyverse, reshape2, multitaper, broom, Rssa, sf, imputeTS)
 
 ######################################################
 # REFERENCES #########################################
@@ -56,7 +56,7 @@ cart2polar <- function(x, y) {
 ######################################################
 
 # Function to calculate peak/nadir timings and values 
-peaktimecalc <- function(mod, f, omega, vals_con, timedf, modeltype, transformation){
+peaktimecalc <- function(mod, f, omega, vals_con, timedf, linkpar){
   
   # New data for which to predict
   preddf <- data.frame(INDEX=seq(1, f+1, by=f/100))
@@ -179,7 +179,7 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, modeltype, transformat
                           ifelse(coef_cos > 0 & coef_sin > 0, (shift/2), (shift + (2 * pi))/2 ))
     
     # Values different by model specification ------------
-    if(modeltype == "loglinear"){
+    if( linkpar$family %in% c("poisson", "quasipoisson")) {
       
       # Amplitude
       amp <- exp(sqrt(coef_sin^2 + coef_cos^2))
@@ -205,7 +205,7 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, modeltype, transformat
       # Variance of relative intensity
       var_intensity_rel <- ( (exp(2*intercept) / (exp(intercept) - amp)^4) ) * var_intensity
       
-    } else if(modeltype == "linear"){
+    } else {
       
       # Amplitude
       amp <- sqrt(coef_sin^2 + coef_cos^2)
@@ -253,14 +253,26 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, modeltype, transformat
 }
 
 # Function to calculate seasonality 
-seasonalitycalc <- function(df, tfield, f, outcome, modeltype = "loglinear"){
-
-  # Identify if variable transformation is needed
-  if(grepl("log", modeltype)){
-    transformation = "log"
-  } else{
-    transformation = "none"
-  }
+seasonalitycalc <- function(df, tfield, f, outcome, 
+                            linkpar = gaussian(link=identity),
+                            spec = FALSE, sing = FALSE){
+  
+  tfield <- "DATE"; f<-12; outcome<-"MEAN_GAM"; 
+  linkpar = gaussian(link=identity); spec = FALSE; sing = FALSE
+  
+  ##########################
+  # EXPLANATION OF ARGUMENTS
+  
+  # df: data frame
+  # tfield: string title of column containing time field; can be date or numeric
+  # outcome: string title of column containing outcome of interest
+  # linkpar : link parameter for expected values and linear predictors. 
+  #           specify as you would for GLM function (e.g. binomial(link = 'logit'))
+  # spec : whether spectral analysis should be implemented; results will be returned in list element [[3]]
+  # sing : whether singular spectral analysis (eigenvector analysis) should be implemented;
+  #            results will be returned in list element [[4]]
+  
+  ##########################
 
   # Process time fields
   if(f==12){
@@ -321,14 +333,6 @@ seasonalitycalc <- function(df, tfield, f, outcome, modeltype = "loglinear"){
     
   }
   
-  # Transform variables if needed
-  if(transformation=="log"){
-    timedf <- timedf %>% mutate(value = log(value)) %>%
-      # Replace -Inf with NA
-      mutate(value = ifelse(is.infinite(value), NA, value))
-    
-  }
-  
   ######################################################
   # PERIODICITY ASSESSMENT #############################
   ######################################################
@@ -340,144 +344,158 @@ seasonalitycalc <- function(df, tfield, f, outcome, modeltype = "loglinear"){
   
   N <- length(vals)
   
-  # 2. Create time series only for complete cycles ----------
-  # Subset to complete years
+  # 2. If time series is sufficiently long, 
+  # 2. Subset time series for complete cycles ----------
+  # 2. If not, fill in missing values using kalman filter / interpolation
   year_totals <- timedf %>%
     drop_na(value) %>%
     group_by(YEAR) %>% tally() %>% ungroup() %>%
     # Subset only complete observations
     filter(n==f) %>% pull(YEAR)
 
-  if(length(year_totals)==0){
-    return(NA)
-  } else {
+  if(length(year_totals)>5){
     vals_con <- ts(timedf %>% filter(YEAR %in% year_totals) %>% pull(value),
                    start = c(year(timedf$DATE[1]), month(timedf$DATE[1])),
                    deltat = 1/f)
-    # At least two full cycles
-    if(length(vals_con)<=f){
-      return(NA)
-    } else{
- 
+  } else if(isTRUE(spec) | isTRUE(sing)) {
+    # Only use Kalman smoothing on time series when spectral analyses are needed
+    vals_con <- na_seadec(vals, algorithm="kalman")
+  } else{
+    vals_con <- vals
+  }
+
   # 3. Spectral Analysis ----------------------
   
-  # Use complete cycles to look at spectra
-  # s <- spec.mtm(vals_con, Ftest = TRUE, jackknife = T)
-  # 
-  # # calculate spectrum
-  # spec1 <- s$spec[1]
-  # s.df <- data.frame(freq = s$freq,  spec = s$spec, spec_scaled = s$spec/spec1,
-  #                    f = s$mtm$Ftest, var_jk = s$mtm$jk$varjk,
-  #                    ci_lower = s$mtm$jk$lowerCI, ci_upper = s$mtm$jk$upperCI) %>%
-  #   # Multiply spectra by 2
-  #   #mutate(spec = 2*spec) %>%
-  #   # Remove zero value as it is meaningless
-  #   dplyr::filter(freq!=0) %>%
-  #   # Convert from frequency to periods
-  #   mutate(period = freq / (1/f),
-  #          time = round(period - (f * (period %/% f)), 0) )
-  # 
-  #   # Which frequencies are statistically significant?
-  #   sig_months <- s.df %>% dplyr::filter(f <= 0.05)
-
-  # Are same frequencies statistically significant across cycles?
-  # ggplot(data = s.df, aes(x=period, y=spec)) + geom_line() +
-  #   geom_vline(xintercept = s.df %>% filter(f <= 0.05) %>% pull(period), lty=2, col='red') +
-  #   scale_x_continuous("Period (years)", breaks = seq(0, length(vals)*2, by=f)) +
-  #   scale_y_log10()
-  # yrs.period <- rev(c(1/12, 1/10, 1/8, 1/6, 1/5, 1/4, 1/3, 0.5, 1, 2))
-  # yrs.labels <- rev(c("1/12", "1/10", "1/8", "1/6", "1/5", "1/4", "1/3", "1/2", "1", "2"))
-  # yrs.freqs <- (1/yrs.period) * (1/f)  # Convert annual period --> annual freq --> monthly freq
-  # ggplot(data = s.df %>% filter(freq>1/12), aes(x=freq, y=spec)) + geom_line() +
-  #   geom_vline(xintercept = s.df %>% filter(f <= 0.05) %>% pull(freq), lty=2, col='red') +
-  #   scale_x_log10("Period (years)", breaks = yrs.freqs, labels = yrs.labels) +
-  #   scale_y_log10()
+  if(spec){
+    
+    # Use complete cycles to look at spectra
+    s <- spec.mtm(vals_con, Ftest = TRUE, jackknife = T)
+    
+    # calculate spectrum
+    spec1 <- s$spec[1]
+    s.df <- data.frame(freq = s$freq,  spec = s$spec, spec_scaled = s$spec/spec1,
+                       f = s$mtm$Ftest, var_jk = s$mtm$jk$varjk,
+                       ci_lower = s$mtm$jk$lowerCI, ci_upper = s$mtm$jk$upperCI) %>%
+      # Multiply spectra by 2
+      #mutate(spec = 2*spec) %>%
+      # Remove zero value as it is meaningless
+      dplyr::filter(freq!=0) %>%
+      # Convert from frequency to periods
+      mutate(period = freq / (1/f),
+             time = round(period - (f * (period %/% f)), 0) )
+    
+    # Which frequencies are statistically significant?
+    sig_months <- s.df %>% dplyr::filter(f <= 0.05)
+    
+    # Are same frequencies statistically significant across cycles?
+    # ggplot(data = s.df, aes(x=period, y=spec)) + geom_line() +
+    #   geom_vline(xintercept = s.df %>% filter(f <= 0.05) %>% pull(period), lty=2, col='red') +
+    #   scale_x_continuous("Period (years)", breaks = seq(0, length(vals)*2, by=f)) +
+    #   scale_y_log10()
+    # yrs.period <- rev(c(1/12, 1/10, 1/8, 1/6, 1/5, 1/4, 1/3, 0.5, 1, 2))
+    # yrs.labels <- rev(c("1/12", "1/10", "1/8", "1/6", "1/5", "1/4", "1/3", "1/2", "1", "2"))
+    # yrs.freqs <- (1/yrs.period) * (1/f)  # Convert annual period --> annual freq --> monthly freq
+    # ggplot(data = s.df %>% filter(freq>1/12), aes(x=freq, y=spec)) + geom_line() +
+    #   geom_vline(xintercept = s.df %>% filter(f <= 0.05) %>% pull(freq), lty=2, col='red') +
+    #   scale_x_log10("Period (years)", breaks = yrs.freqs, labels = yrs.labels) +
+    #   scale_y_log10()
+    
+    
+  } else{
+    s.df <- NA
+  }
 
   # 4. Singular Spectrum Analysis -------------------
-
-  # vals_ssa <- ssa(vals_con)
-  # 
-  # # plot(vals_ssa, type='vectors') # Plot eigenvectors
-  # # plot(vals_ssa, type='series') # Plot reconstructed series
-  # 
-  # # Dominant seasonality (where present) is captured in first eigenvector pairs
-  # EigenDF <- data.frame(vals_ssa$U) %>%
-  #   rename_all(~gsub('X', 'E', .x)) %>%
-  #   mutate(time = 1:nrow(.))
-  # 
-  # # ggplot(EigenDF, aes(x=E4, y=E5)) + geom_point(lwd=2)
-  # 
-  # # Loop over first 10 eigenvector pairs to detect potential seasonality
-  # num_eigens <- grep("E", names(EigenDF))
-  # Esp <- lapply(2:(length(num_eigens)-1), function(e){
-  # 
-  #   print(paste0("Processing eigenvector pairs ", e, " and ", e+1))
-  # 
-  #   ex <- EigenDF %>% pull(!!paste0("E", e))
-  #   ey <- EigenDF %>% pull(!!paste0("E", e+1))
-  # 
-  #   p <- ggplot(data = data.frame(ex = ex, ey = ey), aes(x=ex, y=ey)) + geom_point(lwd=2)
-  #   print(p)
-  # 
-  #   # Convert Cartesian spiral to polar coordinates
-  #   e_p <- cart2polar(ex, ey) %>% mutate(index = 1:nrow(.)) %>%
-  #     mutate(theta_abs = abs(theta)) %>%
-  #     # Calculate jumps from derivatives
-  #     mutate(JUMPS = c(NA, (diff(sign(diff(theta_abs))<0)), NA ))
-  # 
-  #   # Count how many spirals are present based on # of jumps in theta
-  #   n_spirals <- e_p %>%
-  #     filter(JUMPS!=0) %>%
-  #     # Make sure jump is sustained for at least half cycle
-  #     mutate(TDIFF = c(diff(index), NA) ) %>%
-  #     filter(TDIFF > f/2 ) %>%
-  #     nrow()
-  # 
-  #   # Assign shape index to distinguish shapes into groups
-  #   coords <- data.frame(ex, ey, e_p) %>%
-  #     mutate(JUMPS = ifelse(is.na(JUMPS)|JUMPS<0, 0, JUMPS)) %>%
-  #     mutate(GID = cumsum(JUMPS) + JUMPS*0)
-  # 
-  #   # Calculate approximate centroid and area of each spiral
-  #   if(n_spirals > 0){
-  # 
-  #     # Create shape
-  #     sf::sf_use_s2(FALSE)
-  #     spiralshape <- st_as_sf(coords, coords = c("ex", "ey"), crs = 4326) %>%
-  #       group_by(GID) %>%
-  #       tally() %>%
-  #       summarise(geometry = st_combine(geometry)) %>%
-  #       st_cast("POLYGON") %>%
-  #       ungroup() %>%
-  #       st_make_valid() %>%
-  #       mutate(A = st_area(.), C = st_centroid(.)) %>%
-  #       # Look only at shapes defined by # of spirals
-  #       arrange(-A) %>% slice(1:n_spirals) %>%
-  #       # Convert from polar to cartesian coordinates
-  #       mutate(C_rad = st_coordinates(C)[,1],
-  #              C_theta = st_coordinates(C)[,2]) %>%
-  #       mutate(C_x = polar2cart(C_rad, C_theta)[,1],
-  #              C_y = polar2cart(C_rad, C_theta)[,2])
-  # 
-  #     # Phase shift in time units
-  #     if(transformation == "log"){
-  #       phaseshift <- diff(exp(spiralshape %>% st_drop_geometry() %>% pull(C_x)))[1]
-  #     } else{
-  #       phaseshift <- diff(spiralshape %>% st_drop_geometry() %>% pull(C_x))[1]
-  #     }
-  # 
-  #   } else{
-  #     phaseshift <- NA
-  #   }
-  # 
-  #   return( data.frame(EigenPairs = e,
-  #                      N_Spirals = ceiling(n_spirals/2),
-  #                      Phase = phaseshift) )
-  # 
-  # })
-  # E_n <- Esp %>% bind_rows() %>% filter(N_Spirals > 0)
-  # 
-  # print(paste0(paste(sort(unique(E_n$N_Spirals)), collapse = ", "), " spirals found!"))
+  
+  if(sing){
+    
+    vals_ssa <- ssa(vals_con)
+    
+    # plot(vals_ssa, type='vectors') # Plot eigenvectors
+    # plot(vals_ssa, type='series') # Plot reconstructed series
+    
+    # Dominant seasonality (where present) is captured in first eigenvector pairs
+    EigenDF <- data.frame(vals_ssa$U) %>%
+      rename_all(~gsub('X', 'E', .x)) %>%
+      mutate(time = 1:nrow(.))
+    
+    # ggplot(EigenDF, aes(x=E4, y=E5)) + geom_point(lwd=2)
+    
+    # Loop over first 10 eigenvector pairs to detect potential seasonality
+    num_eigens <- grep("E", names(EigenDF))
+    Esp <- lapply(2:(length(num_eigens)-1), function(e){
+      
+      print(paste0("Processing eigenvector pairs ", e, " and ", e+1))
+      
+      ex <- EigenDF %>% pull(!!paste0("E", e))
+      ey <- EigenDF %>% pull(!!paste0("E", e+1))
+      
+      p <- ggplot(data = data.frame(ex = ex, ey = ey), aes(x=ex, y=ey)) + geom_point(lwd=2)
+      print(p)
+      
+      # Convert Cartesian spiral to polar coordinates
+      e_p <- cart2polar(ex, ey) %>% mutate(index = 1:nrow(.)) %>%
+        mutate(theta_abs = abs(theta)) %>%
+        # Calculate jumps from derivatives
+        mutate(JUMPS = c(NA, (diff(sign(diff(theta_abs))<0)), NA ))
+      
+      # Count how many spirals are present based on # of jumps in theta
+      n_spirals <- e_p %>%
+        filter(JUMPS!=0) %>%
+        # Make sure jump is sustained for at least half cycle
+        mutate(TDIFF = c(diff(index), NA) ) %>%
+        filter(TDIFF > f/2 ) %>%
+        nrow()
+      
+      # Assign shape index to distinguish shapes into groups
+      coords <- data.frame(ex, ey, e_p) %>%
+        mutate(JUMPS = ifelse(is.na(JUMPS)|JUMPS<0, 0, JUMPS)) %>%
+        mutate(GID = cumsum(JUMPS) + JUMPS*0)
+      
+      # Calculate approximate centroid and area of each spiral
+      if(n_spirals > 0){
+        
+        # Create shape
+        sf::sf_use_s2(FALSE)
+        spiralshape <- st_as_sf(coords, coords = c("ex", "ey"), crs = 4326) %>%
+          group_by(GID) %>%
+          tally() %>%
+          summarise(geometry = st_combine(geometry)) %>%
+          st_cast("POLYGON") %>%
+          ungroup() %>%
+          st_make_valid() %>%
+          mutate(A = st_area(.), C = st_centroid(.)) %>%
+          # Look only at shapes defined by # of spirals
+          arrange(-A) %>% slice(1:n_spirals) %>%
+          # Convert from polar to cartesian coordinates
+          mutate(C_rad = st_coordinates(C)[,1],
+                 C_theta = st_coordinates(C)[,2]) %>%
+          mutate(C_x = polar2cart(C_rad, C_theta)[,1],
+                 C_y = polar2cart(C_rad, C_theta)[,2])
+        
+        # Phase shift in time units
+        if(transformation == "log"){
+          phaseshift <- diff(exp(spiralshape %>% st_drop_geometry() %>% pull(C_x)))[1]
+        } else{
+          phaseshift <- diff(spiralshape %>% st_drop_geometry() %>% pull(C_x))[1]
+        }
+        
+      } else{
+        phaseshift <- NA
+      }
+      
+      return( data.frame(EigenPairs = e,
+                         N_Spirals = ceiling(n_spirals/2),
+                         Phase = phaseshift) )
+      
+    })
+    E_n <- Esp %>% bind_rows() %>% filter(N_Spirals > 0)
+    
+    print(paste0(paste(sort(unique(E_n$N_Spirals)), collapse = ", "), " spirals found!"))
+    
+  } else{
+    E_n <- NA
+  }
 
   ######################################################
   # MODEL FIT ASSESSMENT #############################
@@ -486,9 +504,10 @@ seasonalitycalc <- function(df, tfield, f, outcome, modeltype = "loglinear"){
   # Remove any infinite values from timedf
   timedf <- timedf %>% filter(!is.na(value) & !is.infinite(value))
   
-  m1 <- glm(value ~ SIN2PI + COS2PI + INDEX + INDEX2 + INDEX3, data = timedf)
+  m1 <- glm(value ~ SIN2PI + COS2PI + INDEX + INDEX2 + INDEX3, 
+            data = timedf, family = linkpar )
   m2 <- glm(value ~ SIN2PI + COS2PI + SIN4PI + COS4PI + 
-              INDEX + INDEX2 + INDEX3, data = timedf)
+              INDEX + INDEX2 + INDEX3, data = timedf, family = linkpar )
   
   # Are 4pi terms significant?
   psig_4 <- tidy(m2) %>% filter(grepl("4PI", term)) %>% filter(p.value<0.05) %>% nrow()
@@ -516,17 +535,14 @@ seasonalitycalc <- function(df, tfield, f, outcome, modeltype = "loglinear"){
   
   if( !all(is.na(m_pref)) ){
     
-    PT <- peaktimecalc(m_pref, f, omega, vals_con, 
-                       timedf, modeltype=modeltype, transformation)
-    
-    return(PT)
+    PT <- peaktimecalc(m_pref, f, omega, vals_con, timedf, linkpar)
     
   } else{
-    return(NA)
+    PT <- NA
   }
 
-  # End function
-  }
- # End else to return nulls 
-  }
+  # Add s.df and E_n as list elements
+  PT <- append(PT, s.df); PT <- append(PT, E_n)
+  
+  return( PT )
 }
