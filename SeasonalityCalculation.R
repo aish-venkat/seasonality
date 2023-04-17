@@ -357,7 +357,7 @@ seasonalitycalc <- function(df, tfield, f, outcome,
   } else if(isTRUE(spec) | isTRUE(sing)) {
     # Only use Kalman smoothing on time series when spectral analyses are needed
     vals_con <- na_seadec(vals, algorithm="kalman")
-  } else if(length(N)< f/2){
+  } else if(N < f/2){
     # If less than half of a cycle is available, ignore 
     vals_con <- NA
   } else{
