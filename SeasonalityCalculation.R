@@ -72,7 +72,7 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, linkpar){
                                               collapse = " ") ) )
   # Add prediction from no trend model
   preddf <- preddf %>%
-    mutate(PRED = exp(as.vector(predict(mod_notrend, newdata=preddf, type="response")))) %>%
+    mutate(PRED = as.vector(predict(mod_notrend, newdata=preddf, type="response"))) %>%
     # Adjust index of prediction to match omega for polar plots
     mutate(INDEX = INDEX-1)
   ggplot(preddf, aes(x=INDEX, y=PRED)) + geom_line() + scale_x_continuous(breaks=1:12)
