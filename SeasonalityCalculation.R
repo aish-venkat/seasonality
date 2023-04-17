@@ -58,7 +58,7 @@ cart2polar <- function(x, y) {
 # Function to calculate peak/nadir timings and values 
 peaktimecalc <- function(mod, f, omega, vals_con, timedf, linkpar){
   
-  lf <- linkpar$family # Store parameter for downstream reference
+  # print(str(linkpar$family))
   
   # New data for which to predict
   preddf <- data.frame(INDEX=seq(1, f+1, by=f/100))
@@ -181,7 +181,7 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, linkpar){
                           ifelse(coef_cos > 0 & coef_sin > 0, (shift/2), (shift + (2 * pi))/2 ))
     
     # Values different by model specification ------------
-    if( any(lf %in% c("poisson", "quasipoisson")) ) {
+    if( any(linkpar$family %in% c("poisson", "quasipoisson")) ) {
       
       # Amplitude
       amp <- exp(sqrt(coef_sin^2 + coef_cos^2))
@@ -256,7 +256,7 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, linkpar){
 
 # Function to calculate seasonality 
 seasonalitycalc <- function(df, tfield, f, outcome, 
-                            linkpar = gaussian(link=identity),
+                            linkpar = gaussian(link="identity"),
                             fspec = FALSE, fsing = FALSE){
   
   ##########################
