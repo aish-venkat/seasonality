@@ -179,7 +179,7 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, linkpar){
                           ifelse(coef_cos > 0 & coef_sin > 0, (shift/2), (shift + (2 * pi))/2 ))
     
     # Values different by model specification ------------
-    if( linkpar$family %in% c("poisson", "quasipoisson") ) {
+    if( any(linkpar$family %in% c("poisson", "quasipoisson")) ) {
       
       # Amplitude
       amp <- exp(sqrt(coef_sin^2 + coef_cos^2))
