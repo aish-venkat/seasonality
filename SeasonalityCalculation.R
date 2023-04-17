@@ -255,7 +255,7 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, linkpar){
 # Function to calculate seasonality 
 seasonalitycalc <- function(df, tfield, f, outcome, 
                             linkpar = gaussian(link=identity),
-                            spec = FALSE, sing = FALSE){
+                            fspec = FALSE, fsing = FALSE){
   
   ##########################
   # EXPLANATION OF ARGUMENTS
@@ -366,7 +366,7 @@ seasonalitycalc <- function(df, tfield, f, outcome,
 
   # 3. Spectral Analysis ----------------------
   
-  if(spec){
+  if(fspec){
     
     # Use complete cycles to look at spectra
     s <- spec.mtm(vals_con, Ftest = TRUE, jackknife = T)
@@ -407,7 +407,7 @@ seasonalitycalc <- function(df, tfield, f, outcome,
 
   # 4. Singular Spectrum Analysis -------------------
   
-  if(sing){
+  if(fsing){
     
     vals_ssa <- ssa(vals_con)
     
