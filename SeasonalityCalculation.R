@@ -77,7 +77,17 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, linkpar){
     mutate(PRED = as.vector(predict(mod_notrend, newdata=preddf, type="response"))) %>%
     # Adjust index of prediction to match omega for polar plots
     mutate(INDEX = INDEX-1)
-  ggplot(preddf, aes(x=INDEX, y=PRED)) + geom_line() + scale_x_continuous(breaks=1:12)
+  
+  # Add original data back into prediction dataframe
+  originaldf <- mod$model %>% data.frame() %>% 
+    mutate(INDEX = (INDEX %% f),
+           INDEX = ifelse(INDEX==0, f, INDEX)) %>% 
+    group_by(INDEX) %>% summarize(ORIGINAL = mean(value, na.rm=T)) %>%
+    ungroup()
+  
+  preddf <- preddf %>% left_join(originaldf, by="INDEX")
+
+  #ggplot(preddf, aes(x=INDEX, y=PRED)) + geom_line() + scale_x_continuous(breaks=1:12)
   
   if(any(grepl("SIN4PI", mod$call))){
     
@@ -352,7 +362,7 @@ seasonalitycalc <- function(df, tfield, f, outcome,
     # Subset only complete observations
     filter(n==f) %>% pull(YEAR)
 
-  if(length(year_totals)>5){
+  if(length(year_totals)>2){
     vals_con <- ts(timedf %>% filter(YEAR %in% year_totals) %>% pull(value),
                    start = c(year(timedf$DATE[1]), month(timedf$DATE[1])),
                    deltat = 1/f)
@@ -526,9 +536,9 @@ seasonalitycalc <- function(df, tfield, f, outcome,
       slice(which.min(value)) %>%
       pull(MODEL)
     
-    if(m_pref=="4PI" & psig_4>0){
+    if(psig_4>0){
       m_pref <- m2
-    } else if(m_pref=="2PI" & psig_2>0){
+    } else if(psig_2>0){
       m_pref <- m1
     } else{
       m_pref <- NA
