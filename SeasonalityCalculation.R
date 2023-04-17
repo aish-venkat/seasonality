@@ -257,9 +257,6 @@ seasonalitycalc <- function(df, tfield, f, outcome,
                             linkpar = gaussian(link=identity),
                             spec = FALSE, sing = FALSE){
   
-  tfield <- "DATE"; f<-12; outcome<-"MEAN_GAM"; 
-  linkpar = gaussian(link=identity); spec = FALSE; sing = FALSE
-  
   ##########################
   # EXPLANATION OF ARGUMENTS
   
