@@ -339,7 +339,7 @@ seasonalitycalc <- function(df, tfield, f, outcome,
              start = c(year(timedf$DATE[1]), month(timedf$DATE[1])),
              deltat = 1/f)
   
-  N <- length(vals)
+  N <- sum(!is.na(timedf$value))
   
   # 2. If time series is sufficiently long, 
   # 2. Subset time series for complete cycles ----------
@@ -357,6 +357,9 @@ seasonalitycalc <- function(df, tfield, f, outcome,
   } else if(isTRUE(spec) | isTRUE(sing)) {
     # Only use Kalman smoothing on time series when spectral analyses are needed
     vals_con <- na_seadec(vals, algorithm="kalman")
+  } else if(length(N)<omega/2){
+    # If less than half of a cycle is available, ignore 
+    vals_con <- NA
   } else{
     vals_con <- vals
   }
@@ -497,46 +500,56 @@ seasonalitycalc <- function(df, tfield, f, outcome,
   ######################################################
   # MODEL FIT ASSESSMENT #############################
   ######################################################
-      
-  # Remove any infinite values from timedf
-  timedf <- timedf %>% filter(!is.na(value) & !is.infinite(value))
-  
-  m1 <- glm(value ~ SIN2PI + COS2PI + INDEX + INDEX2 + INDEX3, 
-            data = timedf, family = linkpar )
-  m2 <- glm(value ~ SIN2PI + COS2PI + SIN4PI + COS4PI + 
-              INDEX + INDEX2 + INDEX3, data = timedf, family = linkpar )
-  
-  # Are 4pi terms significant?
-  psig_4 <- tidy(m2) %>% filter(grepl("4PI", term)) %>% filter(p.value<0.05) %>% nrow()
-  psig_2 <- tidy(m1) %>% filter(grepl("2PI", term)) %>% filter(p.value<0.05) %>% nrow()
-  
-  # Compare models
-  m_pref <- glance(m1) %>% mutate(MODEL = "2PI") %>% 
-    bind_rows(glance(m2) %>% mutate(MODEL = "4PI")) %>% 
-    melt(c("MODEL")) %>%
-    filter(variable=="BIC") %>% 
-    slice(which.min(value)) %>%
-    pull(MODEL)
     
-  if(m_pref=="4PI" & psig_4>0){
-    m_pref <- m2
-  } else if(m_pref=="2PI" & psig_2>0){
-    m_pref <- m1
-  } else{
-    m_pref <- NA
-  } 
+  if(!is.na(all(vals_con))){
+    
+    # Remove any infinite values from timedf
+    timedf <- timedf %>% filter(!is.na(value) & !is.infinite(value))
+    
+    m1 <- glm(value ~ SIN2PI + COS2PI + INDEX + INDEX2 + INDEX3, 
+              data = timedf, family = linkpar )
+    m2 <- glm(value ~ SIN2PI + COS2PI + SIN4PI + COS4PI + 
+                INDEX + INDEX2 + INDEX3, data = timedf, family = linkpar )
+    
+    # Are 4pi terms significant?
+    psig_4 <- tidy(m2) %>% filter(grepl("4PI", term)) %>% filter(p.value<0.05) %>% nrow()
+    psig_2 <- tidy(m1) %>% filter(grepl("2PI", term)) %>% filter(p.value<0.05) %>% nrow()
+    
+    # Compare models
+    m_pref <- glance(m1) %>% mutate(MODEL = "2PI") %>% 
+      bind_rows(glance(m2) %>% mutate(MODEL = "4PI")) %>% 
+      melt(c("MODEL")) %>%
+      filter(variable=="BIC") %>% 
+      slice(which.min(value)) %>%
+      pull(MODEL)
+    
+    if(m_pref=="4PI" & psig_4>0){
+      m_pref <- m2
+    } else if(m_pref=="2PI" & psig_2>0){
+      m_pref <- m1
+    } else{
+      m_pref <- NA
+    } 
+    
+    if( !all(is.na(m_pref)) ){
+      
+      PT <- peaktimecalc(m_pref, f, omega, vals_con, timedf, linkpar)
+      
+    } else{
+      PT <- NA
+    }
+    
+    
+  }  else{
+    PT <- NA
+  }
+
   
   ######################################################
   # HARMONIC CHARACTERISTICS CALCULATION ###############
   ######################################################
   
-  if( !all(is.na(m_pref)) ){
-    
-    PT <- peaktimecalc(m_pref, f, omega, vals_con, timedf, linkpar)
-    
-  } else{
-    PT <- NA
-  }
+
 
   # Add s.df and E_n as list elements
   PT <- append(PT, s.df); PT <- append(PT, E_n)
