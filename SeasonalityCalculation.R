@@ -313,9 +313,6 @@ seasonalitycalc <- function(df, tfield, f, outcome,
     # Merge sequence into time series
     timedf <- data.frame(DATE = timefield, value = df %>% pull(outcome)) %>% 
       full_join(indexdf, by="DATE") %>% 
-      # Simple summary of outcome by date for time series
-      group_by(DATE, YEAR, INDEX, INDEX2, INDEX3, SIN2PI, COS2PI, SIN4PI, COS4PI) %>% 
-      summarize(value = mean(value, na.rm=T)) %>%
       ungroup() %>%
       arrange(DATE) %>%
       distinct()
@@ -340,6 +337,14 @@ seasonalitycalc <- function(df, tfield, f, outcome,
       full_join(indexdf, by="DATE") %>% 
       arrange(DATE) %>% distinct()
     
+  }
+  
+  # If the model family is measuring continuous variables, they can be averaged
+  if(! (linkpar$family %in% c("binomial", "poisson", "quasi")) ){
+    timedf <- timedf %>%
+      # Simple summary of outcome by date for time series
+      group_by(DATE, YEAR, INDEX, INDEX2, INDEX3, SIN2PI, COS2PI, SIN4PI, COS4PI) %>% 
+        summarize(value = mean(value, na.rm=T))
   }
   
   ######################################################
