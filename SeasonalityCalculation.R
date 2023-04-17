@@ -265,10 +265,10 @@ seasonalitycalc <- function(df, tfield, f, outcome,
   # df: data frame
   # tfield: string title of column containing time field; can be date or numeric
   # outcome: string title of column containing outcome of interest
-  # linkpar : link parameter for expected values and linear predictors. 
+  # linkpar : FAMILY AND LINK FUNCTION parameters for expected values and linear predictors
   #           specify as you would for GLM function (e.g. binomial(link = 'logit'))
-  # spec : whether spectral analysis should be implemented; results will be returned in list element [[3]]
-  # sing : whether singular spectral analysis (eigenvector analysis) should be implemented;
+  # fspec : whether spectral analysis should be implemented; results will be returned in list element [[3]]
+  # fsing : whether singular spectral analysis (eigenvector analysis) should be implemented;
   #            results will be returned in list element [[4]]
   
   ##########################
