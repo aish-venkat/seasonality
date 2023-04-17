@@ -179,7 +179,7 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, linkpar){
                           ifelse(coef_cos > 0 & coef_sin > 0, (shift/2), (shift + (2 * pi))/2 ))
     
     # Values different by model specification ------------
-    if( linkpar$family %in% c("poisson", "quasipoisson")) {
+    if( linkpar$family %in% c("poisson", "quasipoisson") ) {
       
       # Amplitude
       amp <- exp(sqrt(coef_sin^2 + coef_cos^2))
@@ -354,7 +354,7 @@ seasonalitycalc <- function(df, tfield, f, outcome,
     vals_con <- ts(timedf %>% filter(YEAR %in% year_totals) %>% pull(value),
                    start = c(year(timedf$DATE[1]), month(timedf$DATE[1])),
                    deltat = 1/f)
-  } else if(isTRUE(spec) | isTRUE(sing)) {
+  } else if(isTRUE(fspec) | isTRUE(fsing)) {
     # Only use Kalman smoothing on time series when spectral analyses are needed
     vals_con <- na_seadec(vals, algorithm="kalman")
   } else if(N < f/2){
