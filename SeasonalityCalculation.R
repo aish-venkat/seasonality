@@ -56,7 +56,7 @@ cart2polar <- function(x, y) {
 ######################################################
 
 # Function to calculate peak/nadir timings and values 
-peaktimecalc <- function(mod, f, omega, vals_con, timedf, linkpar){
+peaktimecalc <- function(mod, f, omega, vals_con, timedf, linkpar, predpar){
   
   # print(str(linkpar$family))
   
@@ -74,7 +74,7 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, linkpar){
                                               collapse = " ") ) )
   # Add prediction from no trend model
   preddf <- preddf %>%
-    mutate(PRED = as.vector(predict(mod_notrend, newdata=preddf, type="response"))) %>%
+    mutate(PRED = as.vector(predict(mod_notrend, newdata=preddf, type=predpar))) %>%
     # Adjust index of prediction to match omega for polar plots
     mutate(INDEX = INDEX-1)
   
@@ -267,7 +267,7 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, linkpar){
 # Function to calculate seasonality 
 seasonalitycalc <- function(df, tfield, f, outcome, 
                             linkpar = gaussian(link="identity"),
-                            fspec = FALSE, fsing = FALSE){
+                            fspec = FALSE, fsing = FALSE, predpar){
   
   ##########################
   # EXPLANATION OF ARGUMENTS
@@ -551,7 +551,7 @@ seasonalitycalc <- function(df, tfield, f, outcome,
     
     if( !all(is.na(m_pref)) ){
       
-      PT <- peaktimecalc(m_pref, f, omega, vals_con, timedf, linkpar)
+      PT <- peaktimecalc(m_pref, f, omega, vals_con, timedf, linkpar, predpar)
       
     } else{
       PT <- NA
