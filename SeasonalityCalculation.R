@@ -282,6 +282,8 @@ seasonalitycalc <- function(df, tfield, f, outcome,
   #            results will be returned in list element [[4]]
   
   ##########################
+  
+  print(df %>% slice(1))
 
   # Process time fields
   if(f==12){
