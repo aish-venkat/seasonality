@@ -369,7 +369,7 @@ seasonalitycalc <- function(df, tfield, f, outcome,
     # Subset only complete observations
     filter(n==f) %>% pull(YEAR)
 
-  if(length(year_totals)>2){
+  if(length(year_totals)>0){
     vals_con <- ts(timedf %>% filter(YEAR %in% year_totals) %>% pull(value),
                    start = c(year(timedf$DATE[1]), month(timedf$DATE[1])),
                    deltat = 1/f)
