@@ -532,7 +532,7 @@ seasonalitycalc <- function(df, tfield, f, outcome,
   ######################################################
   
   # Calculate models if non-NA values total at least half a cycle
-  if( N > (f/2) ){
+  if( !all(is.na(vals_con)) ){
     
     # Remove any infinite values from timedf
     timedf <- timedf %>% filter(!is.na(value) & !is.infinite(value))
