@@ -382,7 +382,7 @@ seasonalitycalc <- function(df, tfield, f, outcome,
     # Only use Kalman smoothing on time series when spectral analyses are needed
     vals_con <- na_seadec(vals, algorithm="kalman")
     
-  } else if(month_totals < f){
+  } else if( month_totals >= (f/2) ){
     # If less than one cycle is available, generate filled cycle of averages based on moving average
     vals_avg <- tapply(vals, cycle(vals), mean, na.rm=T)
     vals_con <- ts(vals_avg %>% as.vector(),
