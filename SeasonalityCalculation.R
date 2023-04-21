@@ -368,19 +368,27 @@ seasonalitycalc <- function(df, tfield, f, outcome,
     group_by(YEAR) %>% tally() %>% ungroup() %>%
     # Subset only complete observations
     filter(n==f) %>% pull(YEAR)
+  
+  # Count number of unique months for which data is available
+  month_totals <- length(which(!is.na(vals)) %% f %>% unique())
 
+  # Decide how to create continuous subsets
   if(length(year_totals)>0){
     vals_con <- ts(timedf %>% filter(YEAR %in% year_totals) %>% pull(value),
                    start = c(year(timedf$DATE[1]), month(timedf$DATE[1])),
                    deltat = 1/f)
-  } else if(isTRUE(fspec) | isTRUE(fsing)) {
+    
+  } else if(length(year_totals)==0 & (isTRUE(fspec) | isTRUE(fsing)) ) {
     # Only use Kalman smoothing on time series when spectral analyses are needed
     vals_con <- na_seadec(vals, algorithm="kalman")
-  } else if(N < f/2){
-    # If less than half of a cycle is available, ignore 
-    vals_con <- NA
+    
+  } else if(month_totals < f){
+    # If less than one cycle is available, generate filled cycle of averages
+    vals_con <- tapply(vals, cycle(vals), mean, na.rm=T)
+    vals_con <- na_seadec(vals_con, algorithm="kalman")
+    
   } else{
-    vals_con <- vals
+    vals_con <- NA
   }
 
   # 3. Spectral Analysis ----------------------
