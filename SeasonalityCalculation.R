@@ -383,9 +383,12 @@ seasonalitycalc <- function(df, tfield, f, outcome,
     vals_con <- na_seadec(vals, algorithm="kalman")
     
   } else if(month_totals < f){
-    # If less than one cycle is available, generate filled cycle of averages
-    vals_con <- tapply(vals, cycle(vals), mean, na.rm=T)
-    vals_con <- na_seadec(vals_con, algorithm="kalman")
+    # If less than one cycle is available, generate filled cycle of averages based on moving average
+    vals_avg <- tapply(vals, cycle(vals), mean, na.rm=T)
+    vals_con <- ts(vals_avg %>% as.vector(),
+                   start = c(year(timedf$DATE[1]), month(timedf$DATE[1])),
+                   deltat = 1/f)
+    vals_con <- na_ma(vals_con, k=2)
     
   } else{
     vals_con <- NA
