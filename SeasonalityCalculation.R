@@ -1,9 +1,9 @@
 # Function to calculate harmonic peaks and nadirs from weekly, monthly, or daily time series
-# Last Updated: April 12, 2023
+# Last Updated: April 23, 2023
 
 # Use pacman package to load/install needed packages
 if (!require("pacman")) install.packages("pacman")
-pacman::p_load(tidyverse, reshape2, multitaper, broom, Rssa, sf, imputeTS)
+pacman::p_load(tidyverse, reshape2, multitaper, broom, Rssa, sf, imputeTS, boot)
 
 ######################################################
 # REFERENCES #########################################
@@ -60,6 +60,8 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, linkpar, predpar){
   
   # print(str(linkpar$family))
   
+  # Calculate predicted values from preferred model -----------------
+  
   # New data for which to predict
   preddf <- data.frame(INDEX=seq(1, f+1, by=f/100))
   preddf <- preddf %>%
@@ -68,7 +70,7 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, linkpar, predpar){
            SIN4PI = sin(4*pi*omega*INDEX),
            COS4PI = cos(4*pi*omega*INDEX)) %>%
     mutate(INDEX2 = INDEX^2, INDEX3 = INDEX^3) 
-
+  
   # Remove linear, quadratic, cubic trend from model
   mod_notrend <- update(mod, as.formula(paste(c(formula(mod), " - INDEX2 - INDEX3"),
                                               collapse = " ") ) )
@@ -86,65 +88,175 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, linkpar, predpar){
     ungroup()
   
   preddf <- preddf %>% left_join(originaldf, by="INDEX")
-
+  
   #ggplot(preddf, aes(x=INDEX, y=PRED)) + geom_line() + scale_x_continuous(breaks=1:12)
   
   if(any(grepl("SIN4PI", mod$call))){
     
+    # Calculate actual peak/nadir values from model prediction ----------
+    
     preddf <- preddf %>%
       # Calculate derivatives
-      mutate(dydx_1 = c(NA, diff(PRED)), dydx_2 = c(NA, NA, diff(diff(PRED)))) %>% 
-      # Calculate peak values
-      mutate(PEAKS = c(NA, (diff(sign(diff(PRED))<0)), NA )) %>% 
-      mutate(MAXIMA = ifelse(PEAKS==1, 1, 0), MINIMA = ifelse(PEAKS==-1, 1, 0)) 
+      mutate(dydx_1 = c(NA, diff(PRED)), 
+             dydx_2 = c(NA, NA, diff(diff(PRED))),
+             dydx_3 = c(NA, NA, NA, diff(diff(diff(PRED)))),
+             dydx_4 = c(NA, NA, NA, NA, diff(diff(diff(diff(PRED))))) ) %>% 
+      # Calculate signs of differences
+      mutate(SIGDIFF_1 = c(NA, (diff(sign(PRED)<0))),
+             SIGDIFF_2 = c(NA, (diff(sign(dydx_1)<0))),
+             SIGDIFF_3 = c(NA, (diff(sign(dydx_2)<0))),
+             SIGDIFF_4 = c(NA, (diff(sign(dydx_3)<0))))  %>%
+      # Calculate peak values 
+      mutate(PEAKS = SIGDIFF_2 ) %>% 
+      mutate(MAXIMA = ifelse(PEAKS==1, 1, 0), 
+             MINIMA = ifelse(PEAKS==-1, 1, 0))
     
+    # Visual check: confirm alignment of 2nd/3rd derivatives
+    # vizdf <- preddf %>% mutate(PRED = rescale(PRED, to=c(0,1)),
+    #                            dydx_1 = rescale(dydx_1, to=c(0,1)),
+    #                            dydx_2 = rescale(dydx_2, to=c(0,1)),
+    #                            dydx_3 = rescale(dydx_3, to=c(0,1)),
+    #                            dydx_4 = rescale(dydx_4, to=c(0,1)))
+    # ggplot(vizdf, aes(x=INDEX)) +
+    #   geom_line(aes(y=PRED), col='black', lwd=2) +
+    #   # First deriv (no sign diff in PRED)
+    #   geom_line(aes(y=dydx_1), col='red', lty=3, lwd=2) +
+    #   geom_point(data = vizdf %>% filter(SIGDIFF_1!=0), aes(x=INDEX, y=dydx_1),
+    #              inherit.aes = F, col='red', size=8, pch=3) +
+    #   # Second deriv
+    #   geom_line(aes(y=dydx_2), col='green', lty=3, lwd=2) +
+    #   geom_point(data = vizdf %>% filter(SIGDIFF_2!=0), aes(x=INDEX, y=dydx_2),
+    #              inherit.aes = F, col='green', size=8, pch=3) +
+    #   # Third deriv
+    #   geom_line(aes(y=dydx_3), col='blue', lty=3, lwd=2) +
+    #   geom_point(data = vizdf %>% filter(SIGDIFF_3!=0), aes(x=INDEX, y=dydx_3),
+    #              inherit.aes = F, col='blue', size=8, pch=3)
+    
+    # Extract values
     peaktiming <- preddf %>% filter(MAXIMA==1) %>% arrange(-PRED) %>% pull(INDEX)
     peakvalue <- preddf %>% filter(MAXIMA==1) %>% arrange(-PRED) %>% pull(PRED)
     
     nadirtiming <- preddf %>% filter(MINIMA==1) %>% arrange(-PRED) %>% pull(INDEX)
     nadirvalue <- preddf %>% filter(MINIMA==1) %>% arrange(-PRED) %>% pull(PRED)
     
-    # Calculate amplitudes from simulated time series ----------------
+    # Calculate amplitudes and CIs from simulated time series ----------------
     fitted_model <- auto.arima(vals_con)
     
-    # Simulate the time series and extract amplitudes several times
-    SIMS <- lapply(1:99, function(z){
+    # Simulate the time series 99 times and retain those highly correlated with original series
+    SIMS <- lapply(1:999, function(z){
       
       #print(paste0("Running simulation: ", z))
-      
-      # Simulate one full cycle
-      vals_sim <- simulate(fitted_model, n.sim = 3*length(vals_con))
+      vals_sim <- simulate(fitted_model, nsim=length(vals_con), bootstrap=T)
       N <- length(vals_sim)
       
+      # Only run downstream blocks if cross-correlation between
+      # FIRST-DIFFERENCED original and simulated time series at lag 0 is statsig
+      
+      ccftest <- ccf(diff(vals_con %>% as.numeric()), # 1st diff original TS
+                     diff(vals_sim %>% as.numeric()), # 1st diff simulated TS
+                     lag.max = f, type='correlation', plot=F)
+      ss_ccf <- data.frame(LAG = ccftest$lag, ACF = ccftest$acf) %>%
+        filter(LAG == 0) %>%
+        mutate(THRESHOLD_UPPER = qnorm((1 + 0.95)/2)/sqrt(length(vals_con)),
+               THRESHOLD_LOWER = -THRESHOLD_UPPER) %>%
+        filter(ACF>=THRESHOLD_UPPER | ACF<=THRESHOLD_LOWER)
+      
+      if( nrow(ss_ccf) > 0 ){
+
+      # Create new simulation data frame
+      simdf <- data.frame(INDEX=1:N, value=vals_sim %>% as.vector() )
+      simdf <- simdf %>%
+        mutate(SIN2PI = sin(2*pi*omega*INDEX),
+               COS2PI = cos(2*pi*omega*INDEX),
+               SIN4PI = sin(4*pi*omega*INDEX),
+               COS4PI = cos(4*pi*omega*INDEX)) %>%
+        mutate(INDEX2 = INDEX^2, INDEX3 = INDEX^3) 
+      
+      m_sim <- glm(value ~ SIN2PI + COS2PI + SIN4PI + COS4PI,
+                   data = simdf, family = linkpar )
+      
+      # Predict values for time series
+      simpreddf <- data.frame(INDEX=seq(1, f+1, by=f/100))
+      simpreddf <- simpreddf %>%
+        mutate(SIN2PI = sin(2*pi*omega*INDEX),
+               COS2PI = cos(2*pi*omega*INDEX),
+               SIN4PI = sin(4*pi*omega*INDEX),
+               COS4PI = cos(4*pi*omega*INDEX)) %>%
+        mutate(INDEX2 = INDEX^2, INDEX3 = INDEX^3) 
+      
+      # Add prediction from no trend model
+      simpreddf <- simpreddf %>%
+        mutate(PRED = as.vector(predict(m_sim, newdata=simpreddf, type=predpar))) %>%
+        # Adjust index of prediction to match omega for polar plots
+        mutate(INDEX = INDEX-1)
+      
+      # CI of peak timing ----------
+      simpreddf <- simpreddf %>%
+        # Calculate derivatives
+        mutate(dydx_1 = c(NA, diff(PRED)), 
+               dydx_2 = c(NA, NA, diff(diff(PRED))),
+               dydx_3 = c(NA, NA, NA, diff(diff(diff(PRED)))),
+               dydx_4 = c(NA, NA, NA, NA, diff(diff(diff(diff(PRED))))) ) %>% 
+        # Calculate signs of differences
+        mutate(SIGDIFF_1 = c(NA, (diff(sign(PRED)<0))),
+               SIGDIFF_2 = c(NA, (diff(sign(dydx_1)<0))),
+               SIGDIFF_3 = c(NA, (diff(sign(dydx_2)<0))),
+               SIGDIFF_4 = c(NA, (diff(sign(dydx_3)<0))))  %>%
+        # Calculate peak values 
+        mutate(PEAKS = SIGDIFF_2 ) %>% 
+        mutate(MAXIMA = ifelse(PEAKS==1, 1, 0), 
+               MINIMA = ifelse(PEAKS==-1, 1, 0)) 
+      
+      # Extract peak timings
+      simpeaktiming <- simpreddf %>% filter(MAXIMA==1) %>% arrange(-PRED) %>% pull(INDEX)
+      simpeakvalue <- simpreddf %>% filter(MAXIMA==1) %>% arrange(-PRED) %>% pull(PRED)
+      
+      simnadirtiming <- simpreddf %>% filter(MINIMA==1) %>% arrange(-PRED) %>% pull(INDEX)
+      simnadirvalue <- simpreddf %>% filter(MINIMA==1) %>% arrange(-PRED) %>% pull(PRED)
+
+      # Amplitude --------
       fft_sim <- data.frame(coef = fft(vals_sim / N, inverse=T), 
                             freqindex = 1:length(vals_sim),
                             freq = (1:N)*(f)/(2*N)) %>% 
         mutate(value_original = vals_sim,
                amp = Mod(coef), freqindex = 1:N,
                value = Re(coef), time = freqindex %% f) %>% 
-        slice(-1) %>% 
-        mutate(SIM = z) %>% 
-        # Calculate derivatives
-        mutate(dydx_1 = c(NA, diff(amp)), dydx_2 = c(NA, NA, diff(diff(amp)))) %>% 
-        # Calculate peak values
-        mutate(PEAKS = c(NA, (diff(sign(diff(amp))<0)), NA )) %>% 
-        mutate(MAXIMA = ifelse(PEAKS==1, 1, 0), MINIMA = ifelse(PEAKS==-1, 1, 0)) 
+        slice(-1) 
       
-      return(fft_sim)
+      simpt <- data.frame(MODEL = "4PI", SIM = z,
+                       PEAKTIMING = simpeaktiming[1], PEAKVALUE = simpeakvalue[1],
+                       NADIRTIMING = simnadirtiming[1], NADIRVALUE = simnadirvalue[1],
+                       PEAK2TIMING = simpeaktiming[2], PEAK2VALUE = simpeakvalue[2],
+                       NADIR2TIMING = simnadirtiming[2], NADIR2VALUE = simnadirvalue[2],
+                       AMPLITUDE = mean(range(fft_sim$amp)) )
+      
+      return( simpt )
+      
+      } # End correlation check
       
     }) %>% bind_rows()
     
-    AMP <- SIMS %>% group_by(SIM) %>% 
-      summarize(MEAN = mean(amp, na.rm=T),
-                RANGE = abs(max(amp) - min(amp)),
-                SD = sd(amp, na.rm=T))
-    
+    # Function to bootstrap CIs of variables
+    btvar <- function(var){
+      varbt <- boot( na.omit(SIMS %>% pull(get(!!var))) , function(u,i) mean(u[i]), R=999)
+      varci <- boot.ci(varbt, conf=0.99, type='bca')
+      return( mean(abs(varci$bca[4:5] - varci$t0)) )
+    }
+
+    amp_bt <- boot(na.omit(SIMS$AMPLITUDE), function(u,i) mean(u[i]), R=999)
+    ci_amp_bt <- boot.ci(amp_bt, conf=0.99, type='bca')
+
     pt <- data.frame(MODEL = "4PI", 
-                     PEAKTIMING = peaktiming[1], PEAKVALUE = peakvalue[1],
-                     NADIRTIMING = nadirtiming[1], NADIRVALUE = nadirvalue[1],
-                     PEAK2TIMING = peaktiming[2], PEAK2VALUE = peakvalue[2],
-                     NADIR2TIMING = nadirtiming[2], NADIR2VALUE = nadirvalue[2],
-                     AMPLITUDE = mean(AMP$MEAN), AMP_CI = mean(AMP$SD))
+                     PEAKTIMING = peaktiming[1], PEAKTIMING_CI = btvar("PEAKTIMING"),
+                     PEAKVALUE = peakvalue[1], PEAKVALUE_CI = btvar("PEAKVALUE"),
+                     NADIRTIMING = nadirtiming[1], NADIRTIMING_CI = btvar("NADIRTIMING"),
+                     NADIRVALUE = nadirvalue[1], NADIRVALUE_CI = btvar("NADIRVALUE"),
+                     PEAK2TIMING = peaktiming[2], PEAK2TIMING_CI = btvar("PEAK2TIMING"),
+                     PEAK2VALUE = peakvalue[2], PEAK2VALUE_CI = btvar("PEAK2VALUE"),
+                     NADIR2TIMING = nadirtiming[2], NADIR2TIMING_CI = btvar("NADIR2TIMING"),
+                     NADIR2VALUE = nadirvalue[2], NADIR2VALUE_CI = btvar("NADIR2VALUE"),
+                     AMPLITUDE = ci_amp_bt$t0, 
+                     AMP_CI = mean(abs(ci_amp_bt$bca[4:5] - ci_amp_bt$t0)) )
     
   } else {
     
@@ -160,7 +272,7 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, linkpar, predpar){
     # Own-term variance is on diagonal, other terms are covariances
     X <- unname(vcov(mod))
     sigma_sin <- X[2,2]; sigma_cos <- X[3,3]; sigma_sincos <- X[2,3];
-
+    
     # Peak timing (same across specifications) -----------
     
     # Define cycle
@@ -182,7 +294,7 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, linkpar, predpar){
                          ifelse(coef_sin>0 & coef_cos<0, (shift+pi)*period,
                                 ifelse(coef_sin<0 & coef_cos<0, (shift+pi)*period,
                                        ifelse(coef_sin<0 & coef_cos>0, (shift + 2*pi)*period))))
-
+    
     # CI of peak timing
     ci_peaktiming <- 1.96 * sqrt(var_phi) * period
     
@@ -206,8 +318,14 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, linkpar, predpar){
       # Peak Value
       peakvalue = exp(intercept) + amp
       
+      # CI of peak value
+      ci_peakvalue <- mean(amp + ci_amp, amp - ci_amp)
+      
       # Nadir Value
       nadirvalue = exp(intercept) - amp
+      
+      # CI of nadir value
+      ci_nadirvalue <- mean(amp + ci_amp, amp - ci_amp)
       
       # Absolute Intensity 
       intensity = peakvalue - nadirvalue
@@ -230,8 +348,14 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, linkpar, predpar){
       # Peak Value
       peakvalue = intercept + amp
       
+      # CI of peak value
+      ci_peakvalue <- mean(amp + ci_amp, amp - ci_amp)
+      
       # Nadir Value
       nadirvalue = intercept - amp
+      
+      # CI of nadir value
+      ci_nadirvalue <- mean(amp + ci_amp, amp - ci_amp)
       
       # Absolute Intensity 
       intensity = peakvalue - nadirvalue
@@ -242,19 +366,23 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, linkpar, predpar){
       var_intensity_rel <- ( (intercept^2) / (intercept - amp)^4 )  * var_intensity
       
     }
-
+    
     # Relative Intensity 
     intensity_rel = peakvalue / nadirvalue
     var_intensity_rel = 4*(var_amp)
     ci_intensity_rel = 1.96 * sqrt((var_intensity_rel))
     
     pt <- data.frame(MODEL = "2PI", 
-                      PEAKTIMING = peaktiming, PEAKVALUE = peakvalue,
-                      NADIRTIMING = nadirtiming, NADIRVALUE = nadirvalue,
-                      PEAK2TIMING = NA, PEAK2VALUE = NA,
-                      NADIR2TIMING = NA, NADIR2VALUE = NA,
-                      AMPLITUDE = amp, AMP_CI = ci_amp, 
-                      INTENSITY = intensity, INTENSITY_CI = ci_intensity,
+                     PEAKTIMING = peaktiming, PEAKTIMING_CI = ci_peaktiming,
+                     PEAKVALUE = peakvalue, PEAKVALUE_CI = ci_peakvalue,
+                     NADIRTIMING = nadirtiming, NADIRTIMING_CI = ci_nadirtiming,
+                     NADIRVALUE = nadirvalue,  NADIRVALUE_CI = ci_nadirvalue,
+                     PEAK2TIMING = NA,
+                     PEAK2VALUE = NA,
+                     NADIR2TIMING = NA, 
+                     NADIR2VALUE = NA,
+                     AMPLITUDE = amp, AMP_CI = ci_amp, 
+                     INTENSITY = intensity, INTENSITY_CI = ci_intensity,
                      INTENSITY_REL = intensity_rel, INTENSITY_REL_CI = ci_intensity_rel)
     
   }
@@ -284,7 +412,7 @@ seasonalitycalc <- function(df, tfield, f, outcome,
   ##########################
   
   print(df %>% slice(1))
-
+  
   # Process time fields
   if(f==12){
     fstr = "months"
@@ -346,7 +474,7 @@ seasonalitycalc <- function(df, tfield, f, outcome,
     timedf <- timedf %>%
       # Simple summary of outcome by date for time series
       group_by(DATE, YEAR, INDEX, INDEX2, INDEX3, SIN2PI, COS2PI, SIN4PI, COS4PI) %>% 
-        summarize(value = mean(value, na.rm=T))
+      summarize(value = mean(value, na.rm=T))
   }
   
   ######################################################
@@ -371,7 +499,7 @@ seasonalitycalc <- function(df, tfield, f, outcome,
   
   # Count number of unique months for which data is available
   month_totals <- length(which(!is.na(vals)) %% f %>% unique())
-
+  
   # Decide how to create continuous subsets
   if(length(year_totals)>0){
     vals_con <- ts(timedf %>% filter(YEAR %in% year_totals) %>% pull(value),
@@ -393,7 +521,7 @@ seasonalitycalc <- function(df, tfield, f, outcome,
   } else{
     vals_con <- NA
   }
-
+  
   # 3. Spectral Analysis ----------------------
   
   if(fspec){
@@ -434,7 +562,7 @@ seasonalitycalc <- function(df, tfield, f, outcome,
   } else{
     s.df <- NA
   }
-
+  
   # 4. Singular Spectrum Analysis -------------------
   
   if(fsing){
@@ -526,7 +654,7 @@ seasonalitycalc <- function(df, tfield, f, outcome,
   } else{
     E_n <- NA
   }
-
+  
   ######################################################
   # MODEL FIT ASSESSMENT #############################
   ######################################################
@@ -573,7 +701,7 @@ seasonalitycalc <- function(df, tfield, f, outcome,
   }  else{
     PT <- NA
   } # End vals_con length check
-
+  
   ######################################################
   # HARMONIC CHARACTERISTICS CALCULATION ###############
   ######################################################
