@@ -375,7 +375,7 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, linkpar, predpar){
     pt <- data.frame(MODEL = "2PI", 
                      PEAKTIMING = peaktiming, PEAKTIMING_CI = ci_peaktiming,
                      PEAKVALUE = peakvalue, PEAKVALUE_CI = ci_peakvalue,
-                     NADIRTIMING = nadirtiming, NADIRTIMING_CI = ci_nadirtiming,
+                     NADIRTIMING = nadirtiming, NADIRTIMING_CI = ci_peaktiming,
                      NADIRVALUE = nadirvalue,  NADIRVALUE_CI = ci_nadirvalue,
                      PEAK2TIMING = NA,
                      PEAK2VALUE = NA,
