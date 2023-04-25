@@ -287,6 +287,8 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, linkpar){
       ungroup()
     # Not calculating CIs of intensity for 4pi specifications
     
+  } else{
+    
     # Extract regression estimate
     coefs <- tidy(mod)
     
