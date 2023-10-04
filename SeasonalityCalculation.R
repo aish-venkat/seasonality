@@ -1,4 +1,5 @@
 # Function to calculate harmonic peaks and nadirs from weekly, monthly, or daily time series
+# Developed by: Aishwarya Venkat, Tufts University
 # Last Updated: April 23, 2023
 
 # Use pacman package to load/install needed packages
