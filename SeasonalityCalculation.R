@@ -1,5 +1,4 @@
 # Function to calculate harmonic peaks and nadirs from weekly, monthly, or daily time series
-# Developed by: Aishwarya Venkat, Tufts University
 # Last Updated: April 23, 2023
 
 # Use pacman package to load/install needed packages
@@ -100,25 +99,18 @@ calc_multiple_harmonics <- function(prediction_frame){
   #   geom_point(data = vizdf %>% filter(SIGDIFF_3!=0), aes(x=INDEX, y=dydx_3),
   #              inherit.aes = F, col='purple', size=8, pch=3)
 
-  # Extract values
-  peaktiming <- prediction_frame %>% filter(MAXIMA==1) %>% arrange(-PRED) %>% pull(INDEX)
-  peakvalue <- prediction_frame %>% filter(MAXIMA==1) %>% arrange(-PRED) %>% pull(PRED)
-  
-  nadirtiming <- prediction_frame %>% filter(MINIMA==1) %>% arrange(-PRED) %>% pull(INDEX)
-  nadirvalue <- prediction_frame %>% filter(MINIMA==1) %>% arrange(-PRED) %>% pull(PRED)
-  
   # Amplitude (empirical) --------
   
   # Get list of breaks from 2nd and 3rd derivatives
   DERIV_BREAKS <- prediction_frame %>% 
-    dplyr::select(INDEX, contains("SIGDIFF")) %>%
-    na_if(0) %>%
+    dplyr::select(INDEX, PRED, contains("SIGDIFF"), MAXIMA, MINIMA) %>%
+    mutate(across(where(is.numeric), ~na_if(., 0))) %>% 
     mutate_at(vars(starts_with("SIG")), as.character) %>%
     mutate(SIGDIFF_2 = gsub("1|-1", "2nd", SIGDIFF_2),
            SIGDIFF_3 = gsub("1|-1", "3rd", SIGDIFF_3)) %>%
     mutate(SIG_BRK = coalesce(SIGDIFF_2, SIGDIFF_3)) %>% 
     filter(!is.na(SIG_BRK)) %>%
-    dplyr::select(INDEX, SIG_BRK) %>% 
+    dplyr::select(INDEX, PRED, SIG_BRK, MAXIMA, MINIMA) %>% 
     arrange(INDEX)
   
   # Repeat first index at the end to support looping over end of calendar year
@@ -128,7 +120,11 @@ calc_multiple_harmonics <- function(prediction_frame){
     data.frame(from = DERIV_BREAKS$INDEX[x], 
                to = DERIV_BREAKS$INDEX[x+1],
                fromtype = DERIV_BREAKS$SIG_BRK[x],
-               totype = DERIV_BREAKS$SIG_BRK[x+1])
+               totype = DERIV_BREAKS$SIG_BRK[x+1], 
+               # Retain fields from previous
+               PRED = DERIV_BREAKS$PRED[x+1],
+               MAXIMA = DERIV_BREAKS$MAXIMA[x+1],
+               MINIMA = DERIV_BREAKS$MINIMA[x+1])
   }) %>% bind_rows()
   
   # Calculate amplitudes for each interval
@@ -151,9 +147,17 @@ calc_multiple_harmonics <- function(prediction_frame){
     
   }) %>% bind_rows() 
   
-  # Remove breakpoints where 2nd and 3rd derivatives have the same sign / 
+  # PULL breakpoints where 2nd and 3rd derivatives have the same sign / 
   # are moving in the same direction
-  AMPS <- AMPS %>%  filter(SLOPE_3==1 & SLOPE_4==1) %>% arrange(-AMP)
+  AMPS <- AMPS %>%  filter(SLOPE_3 == SLOPE_4) 
+  
+  # Extract values, but
+  peaktiming <- AMPS %>% filter(MAXIMA==1) %>% arrange(-AMP) %>% pull(to)
+  peakvalue <- AMPS %>% filter(MAXIMA==1) %>% arrange(-AMP) %>% pull(PRED)
+
+  nadirtiming <- AMPS %>% filter(MINIMA==1) %>% arrange(-AMP) %>% pull(to)
+  nadirvalue <- AMPS %>% filter(MINIMA==1) %>% arrange(-AMP) %>% pull(PRED)
+  
 
   return ( data.frame(MODEL = "4PI", 
                       PEAKTIMING = peaktiming[1], PEAKVALUE = peakvalue[1],
@@ -502,7 +506,8 @@ seasonalitycalc <- function(df, tfield, f, outcome,
     timedf <- timedf %>%
       # Simple summary of outcome by date for time series
       group_by(DATE, YEAR, INDEX, INDEX2, INDEX3, SIN2PI, COS2PI, SIN4PI, COS4PI) %>% 
-      summarize(value = mean(value, na.rm=T))
+      summarize(value = mean(value, na.rm=T)) %>%
+      ungroup()
   }
   
   ######################################################
@@ -702,13 +707,15 @@ seasonalitycalc <- function(df, tfield, f, outcome,
     psig_4 <- tidy(m2) %>% filter(grepl("4PI", term)) %>% filter(p.value<0.05) %>% nrow()
     psig_2 <- tidy(m1) %>% filter(grepl("2PI", term)) %>% filter(p.value<0.05) %>% nrow()
     
+    # BIC penalizes distance away from TRUE model; therefore, not appropriate for this task
+    # We use AIC here instead
     # Compare models
-    m_pref <- glance(m1) %>% mutate(MODEL = "2PI") %>% 
-      bind_rows(glance(m2) %>% mutate(MODEL = "4PI")) %>% 
-      melt(c("MODEL")) %>%
-      filter(variable=="BIC") %>% 
-      slice(which.min(value)) %>%
-      pull(MODEL)
+    # m_pref <- glance(m1) %>% mutate(MODEL = "2PI") %>%
+    #   bind_rows(glance(m2) %>% mutate(MODEL = "4PI")) %>%
+    #   melt(c("MODEL")) %>%
+    #   filter(variable=="AIC") %>%
+    #   slice(which.min(value)) %>%
+    #   pull(MODEL)
     
     if(psig_4>0){
       m_pref <- m2
