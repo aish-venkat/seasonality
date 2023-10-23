@@ -146,10 +146,20 @@ calc_multiple_harmonics <- function(prediction_frame){
       arrange(from, to, AMP)
     
   }) %>% bind_rows() 
-  
+
   # PULL breakpoints where 2nd and 3rd derivatives have the same sign / 
   # are moving in the same direction
   AMPS <- AMPS %>%  filter(SLOPE_3 == SLOPE_4) 
+  
+  # IF only two rows are present with the same amplitudes, we have a square curve
+  # so the 'PEAK' is technically in between the two zero values
+  if( all( as.character(AMPS$AMP) %in% c("1", "0") ) ){
+    AMPS <- AMPS %>% 
+      mutate(MINIMA = ifelse(AMP==0, 1, NA), MAXIMA = ifelse(AMP==1, 1, NA)) %>% 
+      rowwise() %>% mutate(NEWMEAN = mean(from, to)) %>% ungroup() %>% 
+      mutate(from = NEWMEAN, to = NEWMEAN) %>% 
+      dplyr::select(-NEWMEAN)
+  }
   
   # Extract values, but
   peaktiming <- AMPS %>% filter(MAXIMA==1) %>% arrange(-AMP) %>% pull(to)
