@@ -156,7 +156,7 @@ calc_multiple_harmonics <- function(prediction_frame){
   if( all( as.character(AMPS$AMP) %in% c("1", "0") ) ){
     AMPS <- AMPS %>% 
       mutate(MINIMA = ifelse(AMP==0, 1, NA), MAXIMA = ifelse(AMP==1, 1, NA)) %>% 
-      rowwise() %>% mutate(NEWMEAN = mean(from, to)) %>% ungroup() %>% 
+      rowwise() %>% mutate(NEWMEAN = mean(from, to, na.rm=T)) %>% ungroup() %>% 
       mutate(from = NEWMEAN, to = NEWMEAN) %>% 
       dplyr::select(-NEWMEAN)
   }
