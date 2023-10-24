@@ -115,7 +115,7 @@ calc_multiple_harmonics <- function(prediction_frame){
 
   # If no inflection points are found, break out of loop
   if( nrow(DERIV_BREAKS)==0){
-    return(NA) 
+    return(NULL) 
   } else{
     # Repeat first index at the end to support looping over end of calendar year
     DERIV_BREAKS <- DERIV_BREAKS %>% bind_rows(DERIV_BREAKS %>% slice(1))
