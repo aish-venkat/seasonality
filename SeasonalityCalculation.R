@@ -284,7 +284,7 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, linkpar){
     # Function to bootstrap CIs of variables
     btvar <- function(var){
       varvec <- SIMS %>% pull(get(!!var))
-      if( (nrow(varvec)>0) & (!all(is.na(varvec))) ){
+      if( (length(varvec)>0) & (!all(is.na(varvec))) ){
         varbt <- boot( na.omit(varvec) , function(u,i) mean(u[i]), R=999)
         varci <- boot.ci(varbt, conf=0.99, type='bca')
         return( mean(abs(varci$bca[4:5] - varci$t0)) )
