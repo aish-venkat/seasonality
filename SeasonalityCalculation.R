@@ -115,76 +115,76 @@ calc_multiple_harmonics <- function(prediction_frame){
 
   # If no inflection points are found, break out of loop
   if( nrow(DERIV_BREAKS)==0){
-    break 
-  }
-  
-  # Repeat first index at the end to support looping over end of calendar year
-  DERIV_BREAKS <- DERIV_BREAKS %>% bind_rows(DERIV_BREAKS %>% slice(1))
-  
-  DERIV_BREAKS <- lapply(1:(nrow(DERIV_BREAKS)-1), function(x){
-    data.frame(from = DERIV_BREAKS$INDEX[x], 
-               to = DERIV_BREAKS$INDEX[x+1],
-               fromtype = DERIV_BREAKS$SIG_BRK[x],
-               totype = DERIV_BREAKS$SIG_BRK[x+1], 
-               # Retain fields from previous
-               PRED = DERIV_BREAKS$PRED[x+1],
-               MAXIMA = DERIV_BREAKS$MAXIMA[x+1],
-               MINIMA = DERIV_BREAKS$MINIMA[x+1])
-  }) %>% bind_rows()
-  
-  # Calculate amplitudes for each interval
-  AMPS <- lapply(1:nrow(DERIV_BREAKS), function(x){
+    return(NA) 
+  } else{
+    # Repeat first index at the end to support looping over end of calendar year
+    DERIV_BREAKS <- DERIV_BREAKS %>% bind_rows(DERIV_BREAKS %>% slice(1))
     
-    if( DERIV_BREAKS$from[x] < DERIV_BREAKS$to[x] ){
-      derivchunk <- prediction_frame %>%
-        filter(INDEX >= DERIV_BREAKS$from[x] & INDEX <=  DERIV_BREAKS$to[x]) 
-    } else{
-      derivchunk <- prediction_frame %>% 
-        filter(INDEX >= DERIV_BREAKS$from[x] | INDEX <=  DERIV_BREAKS$to[x])
-    }
+    DERIV_BREAKS <- lapply(1:(nrow(DERIV_BREAKS)-1), function(x){
+      data.frame(from = DERIV_BREAKS$INDEX[x], 
+                 to = DERIV_BREAKS$INDEX[x+1],
+                 fromtype = DERIV_BREAKS$SIG_BRK[x],
+                 totype = DERIV_BREAKS$SIG_BRK[x+1], 
+                 # Retain fields from previous
+                 PRED = DERIV_BREAKS$PRED[x+1],
+                 MAXIMA = DERIV_BREAKS$MAXIMA[x+1],
+                 MINIMA = DERIV_BREAKS$MINIMA[x+1])
+    }) %>% bind_rows()
     
-    # Get slope of dydx_3 and dydx_4
-    derivchunk %>% summarize(AMP = max(PRED) - min(PRED)) %>% 
-      bind_cols(DERIV_BREAKS %>% slice(x))  %>%
-      mutate(SLOPE_3 = sign(coef(lm(dydx_3 ~ INDEX, data = derivchunk))[[2]]), 
-             SLOPE_4 = sign(coef(lm(dydx_4 ~ INDEX, data = derivchunk))[[2]])) %>%
-      arrange(from, to, AMP)
-    
-  }) %>% bind_rows() 
-
-  # PULL breakpoints where 2nd and 3rd derivatives have the same sign / 
-  # are moving in the same direction
-  AMPS <- AMPS %>%  filter(SLOPE_3 == SLOPE_4) 
+    # Calculate amplitudes for each interval
+    AMPS <- lapply(1:nrow(DERIV_BREAKS), function(x){
+      
+      if( DERIV_BREAKS$from[x] < DERIV_BREAKS$to[x] ){
+        derivchunk <- prediction_frame %>%
+          filter(INDEX >= DERIV_BREAKS$from[x] & INDEX <=  DERIV_BREAKS$to[x]) 
+      } else{
+        derivchunk <- prediction_frame %>% 
+          filter(INDEX >= DERIV_BREAKS$from[x] | INDEX <=  DERIV_BREAKS$to[x])
+      }
+      
+      # Get slope of dydx_3 and dydx_4
+      derivchunk %>% summarize(AMP = max(PRED) - min(PRED)) %>% 
+        bind_cols(DERIV_BREAKS %>% slice(x))  %>%
+        mutate(SLOPE_3 = sign(coef(lm(dydx_3 ~ INDEX, data = derivchunk))[[2]]), 
+               SLOPE_4 = sign(coef(lm(dydx_4 ~ INDEX, data = derivchunk))[[2]])) %>%
+        arrange(from, to, AMP)
+      
+    }) %>% bind_rows() 
   
-  # IF only two rows are present with the same amplitudes, we have a square curve
-  # so the 'PEAK' is technically in between the two zero values
-  if(nrow(AMPS)>0){
+    # PULL breakpoints where 2nd and 3rd derivatives have the same sign / 
+    # are moving in the same direction
+    AMPS <- AMPS %>%  filter(SLOPE_3 == SLOPE_4) 
     
-    if( all( as.character(AMPS$AMP) %in% c("1", "0") ) ){
-      print(AMPS) %>% data.frame()
-      AMPS <- AMPS %>% 
-        mutate(MINIMA = ifelse(AMP==0, 1, NA), MAXIMA = ifelse(AMP==1, 1, NA)) %>% 
-        rowwise() %>% mutate(NEWMEAN = mean(from, to, na.rm=T)) %>% ungroup() %>% 
-        mutate(from = NEWMEAN, to = NEWMEAN) %>% 
-        dplyr::select(-NEWMEAN)
-    }
+    # IF only two rows are present with the same amplitudes, we have a square curve
+    # so the 'PEAK' is technically in between the two zero values
+    if(nrow(AMPS)>0){
+      
+      if( all( as.character(AMPS$AMP) %in% c("1", "0") ) ){
+        print(AMPS) %>% data.frame()
+        AMPS <- AMPS %>% 
+          mutate(MINIMA = ifelse(AMP==0, 1, NA), MAXIMA = ifelse(AMP==1, 1, NA)) %>% 
+          rowwise() %>% mutate(NEWMEAN = mean(from, to, na.rm=T)) %>% ungroup() %>% 
+          mutate(from = NEWMEAN, to = NEWMEAN) %>% 
+          dplyr::select(-NEWMEAN)
+      }
+      
+      # Extract values, but
+      peaktiming <- AMPS %>% filter(MAXIMA==1) %>% arrange(-AMP) %>% pull(to)
+      peakvalue <- AMPS %>% filter(MAXIMA==1) %>% arrange(-AMP) %>% pull(PRED)
     
-    # Extract values, but
-    peaktiming <- AMPS %>% filter(MAXIMA==1) %>% arrange(-AMP) %>% pull(to)
-    peakvalue <- AMPS %>% filter(MAXIMA==1) %>% arrange(-AMP) %>% pull(PRED)
+      nadirtiming <- AMPS %>% filter(MINIMA==1) %>% arrange(-AMP) %>% pull(to)
+      nadirvalue <- AMPS %>% filter(MINIMA==1) %>% arrange(-AMP) %>% pull(PRED)
+      
+    
+      return ( data.frame(MODEL = "4PI", 
+                          PEAKTIMING = peaktiming[1], PEAKVALUE = peakvalue[1],
+                          NADIRTIMING = nadirtiming[1], NADIRVALUE = nadirvalue[1],
+                          PEAK2TIMING = peaktiming[2], PEAK2VALUE = peakvalue[2],
+                          NADIR2TIMING = nadirtiming[2], NADIR2VALUE = nadirvalue[2],
+                        AMP1 = AMPS$AMP[1], AMP2 = AMPS$AMP[2] ) )
   
-    nadirtiming <- AMPS %>% filter(MINIMA==1) %>% arrange(-AMP) %>% pull(to)
-    nadirvalue <- AMPS %>% filter(MINIMA==1) %>% arrange(-AMP) %>% pull(PRED)
-    
-  
-    return ( data.frame(MODEL = "4PI", 
-                        PEAKTIMING = peaktiming[1], PEAKVALUE = peakvalue[1],
-                        NADIRTIMING = nadirtiming[1], NADIRVALUE = nadirvalue[1],
-                        PEAK2TIMING = peaktiming[2], PEAK2VALUE = peakvalue[2],
-                        NADIR2TIMING = nadirtiming[2], NADIR2VALUE = nadirvalue[2],
-                      AMP1 = AMPS$AMP[1], AMP2 = AMPS$AMP[2] ) )
-
-  } # End nrow check for AMPS
+    } # End nrow check for AMPS
+  } # End check for zero inflection points
 } # End calc_multiple_harmonics function 
 
 # Function to calculate peak/nadir timings and values 
