@@ -320,7 +320,7 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, linkpar){
   } else{
     
     # Extract regression estimate
-    coefs <- tidy(mod)
+    coefs <- tidy(mod_notrend)
     
     intercept <- coefs %>% filter(term=="(Intercept)") %>% pull(estimate)
     
