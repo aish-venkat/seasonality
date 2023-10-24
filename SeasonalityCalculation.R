@@ -271,8 +271,8 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, linkpar){
         # Adjust index of prediction to match omega for polar plots
         mutate(INDEX = INDEX-1)
 
-      print( calc_multiple_harmonics(simpreddf) )
-      return( calc_multiple_harmonics(simpreddf) )
+      mh <- calc_multiple_harmonics(simpreddf)
+      print(mh); return(mh); 
       
       } # End correlation check
       
