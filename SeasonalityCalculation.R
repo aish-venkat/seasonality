@@ -141,12 +141,18 @@ calc_multiple_harmonics <- function(prediction_frame){
         derivchunk <- prediction_frame %>% 
           filter(INDEX >= DERIV_BREAKS$from[x] | INDEX <=  DERIV_BREAKS$to[x])
       }
-      
+
       # Get slope of dydx_3 and dydx_4
+      if(nrow(derivchunk)>3){
+        SL3 <- sign(coef(lm(dydx_3 ~ INDEX, data = derivchunk))[[2]])
+        SL4 <- sign(coef(lm(dydx_4 ~ INDEX, data = derivchunk))[[2]])
+      } else{
+        SL3 <- NA; SL4 <- NA;
+      }
+      
       derivchunk %>% summarize(AMP = max(PRED) - min(PRED)) %>% 
         bind_cols(DERIV_BREAKS %>% slice(x))  %>%
-        mutate(SLOPE_3 = sign(coef(lm(dydx_3 ~ INDEX, data = derivchunk))[[2]]), 
-               SLOPE_4 = sign(coef(lm(dydx_4 ~ INDEX, data = derivchunk))[[2]])) %>%
+        mutate(SLOPE_3 = SL3, SLOPE_4 = SL4) %>%
         arrange(from, to, AMP)
       
     }) %>% bind_rows() 
