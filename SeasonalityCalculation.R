@@ -154,6 +154,7 @@ calc_multiple_harmonics <- function(prediction_frame){
   # IF only two rows are present with the same amplitudes, we have a square curve
   # so the 'PEAK' is technically in between the two zero values
   if( all( as.character(AMPS$AMP) %in% c("1", "0") ) ){
+    print(AMPS) %>% data.frame()
     AMPS <- AMPS %>% 
       mutate(MINIMA = ifelse(AMP==0, 1, NA), MAXIMA = ifelse(AMP==1, 1, NA)) %>% 
       rowwise() %>% mutate(NEWMEAN = mean(from, to, na.rm=T)) %>% ungroup() %>% 
