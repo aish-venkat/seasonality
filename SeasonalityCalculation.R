@@ -153,31 +153,34 @@ calc_multiple_harmonics <- function(prediction_frame){
   
   # IF only two rows are present with the same amplitudes, we have a square curve
   # so the 'PEAK' is technically in between the two zero values
-  if( all( as.character(AMPS$AMP) %in% c("1", "0") ) ){
-    print(AMPS) %>% data.frame()
-    AMPS <- AMPS %>% 
-      mutate(MINIMA = ifelse(AMP==0, 1, NA), MAXIMA = ifelse(AMP==1, 1, NA)) %>% 
-      rowwise() %>% mutate(NEWMEAN = mean(from, to, na.rm=T)) %>% ungroup() %>% 
-      mutate(from = NEWMEAN, to = NEWMEAN) %>% 
-      dplyr::select(-NEWMEAN)
-  }
+  if(nrow(AMPS)>0){
+    
+    if( all( as.character(AMPS$AMP) %in% c("1", "0") ) ){
+      print(AMPS) %>% data.frame()
+      AMPS <- AMPS %>% 
+        mutate(MINIMA = ifelse(AMP==0, 1, NA), MAXIMA = ifelse(AMP==1, 1, NA)) %>% 
+        rowwise() %>% mutate(NEWMEAN = mean(from, to, na.rm=T)) %>% ungroup() %>% 
+        mutate(from = NEWMEAN, to = NEWMEAN) %>% 
+        dplyr::select(-NEWMEAN)
+    }
+    
+    # Extract values, but
+    peaktiming <- AMPS %>% filter(MAXIMA==1) %>% arrange(-AMP) %>% pull(to)
+    peakvalue <- AMPS %>% filter(MAXIMA==1) %>% arrange(-AMP) %>% pull(PRED)
   
-  # Extract values, but
-  peaktiming <- AMPS %>% filter(MAXIMA==1) %>% arrange(-AMP) %>% pull(to)
-  peakvalue <- AMPS %>% filter(MAXIMA==1) %>% arrange(-AMP) %>% pull(PRED)
-
-  nadirtiming <- AMPS %>% filter(MINIMA==1) %>% arrange(-AMP) %>% pull(to)
-  nadirvalue <- AMPS %>% filter(MINIMA==1) %>% arrange(-AMP) %>% pull(PRED)
+    nadirtiming <- AMPS %>% filter(MINIMA==1) %>% arrange(-AMP) %>% pull(to)
+    nadirvalue <- AMPS %>% filter(MINIMA==1) %>% arrange(-AMP) %>% pull(PRED)
+    
   
-
-  return ( data.frame(MODEL = "4PI", 
-                      PEAKTIMING = peaktiming[1], PEAKVALUE = peakvalue[1],
-                      NADIRTIMING = nadirtiming[1], NADIRVALUE = nadirvalue[1],
-                      PEAK2TIMING = peaktiming[2], PEAK2VALUE = peakvalue[2],
-                      NADIR2TIMING = nadirtiming[2], NADIR2VALUE = nadirvalue[2],
+    return ( data.frame(MODEL = "4PI", 
+                        PEAKTIMING = peaktiming[1], PEAKVALUE = peakvalue[1],
+                        NADIRTIMING = nadirtiming[1], NADIRVALUE = nadirvalue[1],
+                        PEAK2TIMING = peaktiming[2], PEAK2VALUE = peakvalue[2],
+                        NADIR2TIMING = nadirtiming[2], NADIR2VALUE = nadirvalue[2],
                       AMP1 = AMPS$AMP[1], AMP2 = AMPS$AMP[2] ) )
-  
-}
+
+  } # End nrow check for AMPS
+} # End calc_multiple_harmonics function 
 
 # Function to calculate peak/nadir timings and values 
 peaktimecalc <- function(mod, f, omega, vals_con, timedf, linkpar){
