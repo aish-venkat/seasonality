@@ -270,7 +270,8 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, linkpar){
         mutate(PRED = as.vector(predict(m_sim, newdata=simpreddf, type='response'))) %>%
         # Adjust index of prediction to match omega for polar plots
         mutate(INDEX = INDEX-1)
-      
+
+      print( calc_multiple_harmonics(simpreddf) )
       return( calc_multiple_harmonics(simpreddf) )
       
       } # End correlation check
@@ -280,7 +281,7 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, linkpar){
     # Function to bootstrap CIs of variables
     btvar <- function(var){
       varvec <- SIMS %>% pull(get(!!var))
-      if( !all(is.na(varvec)) ){
+      if( (nrow(varvec)>0) & (!all(is.na(varvec))) ){
         varbt <- boot( na.omit(varvec) , function(u,i) mean(u[i]), R=999)
         varci <- boot.ci(varbt, conf=0.99, type='bca')
         return( mean(abs(varci$bca[4:5] - varci$t0)) )
