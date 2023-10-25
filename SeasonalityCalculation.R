@@ -257,37 +257,56 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, linkpar){
         filter(ACF>=THRESHOLD_UPPER | ACF<=THRESHOLD_LOWER)
       
       if( nrow(ss_ccf) > 0 ){
-
-      # Create new simulation data frame
-      simdf <- data.frame(INDEX=1:N, value=vals_sim %>% as.vector() )
-      simdf <- simdf %>%
-        mutate(SIN2PI = sin(2*pi*omega*INDEX),
-               COS2PI = cos(2*pi*omega*INDEX),
-               SIN4PI = sin(4*pi*omega*INDEX),
-               COS4PI = cos(4*pi*omega*INDEX)) %>%
-        mutate(INDEX2 = INDEX^2, INDEX3 = INDEX^3) 
-      
-      m_sim <- glm(value ~ SIN2PI + COS2PI + SIN4PI + COS4PI,
-                   data = simdf, family = linkpar )
-      
-      # Predict values for time series
-      simpreddf <- data.frame(INDEX=seq(1, f+1, by=f/100))
-      simpreddf <- simpreddf %>%
-        mutate(SIN2PI = sin(2*pi*omega*INDEX),
-               COS2PI = cos(2*pi*omega*INDEX),
-               SIN4PI = sin(4*pi*omega*INDEX),
-               COS4PI = cos(4*pi*omega*INDEX)) %>%
-        mutate(INDEX2 = INDEX^2, INDEX3 = INDEX^3) 
-      
-      # Add prediction from no trend model
-      simpreddf <- simpreddf %>%
-        mutate(PRED = as.vector(predict(m_sim, newdata=simpreddf, type='response'))) %>%
-        # Adjust index of prediction to match omega for polar plots
-        mutate(INDEX = INDEX-1)
-
-      mh <- calc_multiple_harmonics(simpreddf)
-      print(mh); return(mh); 
-      
+        
+        # Create new simulation data frame
+        simdf <- data.frame(INDEX=1:N, value=vals_sim %>% as.vector() )
+        simdf <- simdf %>%
+          mutate(SIN2PI = sin(2*pi*omega*INDEX),
+                 COS2PI = cos(2*pi*omega*INDEX),
+                 SIN4PI = sin(4*pi*omega*INDEX),
+                 COS4PI = cos(4*pi*omega*INDEX)) %>%
+          mutate(INDEX2 = INDEX^2, INDEX3 = INDEX^3) 
+        
+        # Wrap simulation regression in tryCatch in case
+        # there are errors with the simulated model
+        MODELSIM_GLM <- function(simdf) {
+          out <- tryCatch(
+            {
+              glm(value ~ SIN2PI + COS2PI + SIN4PI + COS4PI,
+                  data = simdf, family = linkpar )
+            },
+            error=function(cond) { return(NA) },
+            warning=function(cond) { return(NA) },
+            finally=function(cond) { }
+          )    
+          return(out)
+        }
+        
+        m_sim <- MODELSIM_GLM(simdf)
+        
+        if(! all(is.na(m_sim)) ){
+          
+          # Predict values for time series
+          simpreddf <- data.frame(INDEX=seq(1, f+1, by=f/100))
+          simpreddf <- simpreddf %>%
+            mutate(SIN2PI = sin(2*pi*omega*INDEX),
+                   COS2PI = cos(2*pi*omega*INDEX),
+                   SIN4PI = sin(4*pi*omega*INDEX),
+                   COS4PI = cos(4*pi*omega*INDEX)) %>%
+            mutate(INDEX2 = INDEX^2, INDEX3 = INDEX^3) 
+          
+          # Add prediction from no trend model
+          simpreddf <- simpreddf %>%
+            mutate(PRED = as.vector(predict(m_sim, newdata=simpreddf, type='response'))) %>%
+            # Adjust index of prediction to match omega for polar plots
+            mutate(INDEX = INDEX-1)
+          
+          mh <- calc_multiple_harmonics(simpreddf)
+          print(mh); return(mh); 
+          
+        } else{
+          return(NULL)
+        }      
       } # End correlation check
       
     }) %>% bind_rows()
