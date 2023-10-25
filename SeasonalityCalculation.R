@@ -310,37 +310,60 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, linkpar){
       } # End correlation check
       
     }) %>% bind_rows()
-    
-    # Function to bootstrap CIs of variables
-    btvar <- function(var){
-      varvec <- SIMS %>% pull(get(!!var))
-      if( (length(varvec)>0) & (!all(is.na(varvec))) ){
-        varbt <- boot( na.omit(varvec) , function(u,i) mean(u[i]), R=999)
-        varci <- boot.ci(varbt, conf=0.99, type='bca')
-        return( mean(abs(varci$bca[4:5] - varci$t0)) )
-      } else{
-        return(NA)
-      }
-    }
 
-    pt <- data.frame(MODEL = "4PI", 
-                     PEAKTIMING = PRED_M$PEAKTIMING, PEAKTIMING_CI = btvar("PEAKTIMING"),
-                     PEAKVALUE = PRED_M$PEAKVALUE, PEAKVALUE_CI = btvar("PEAKVALUE"),
-                     NADIRTIMING = PRED_M$NADIRTIMING, NADIRTIMING_CI = btvar("NADIRTIMING"),
-                     NADIRVALUE = PRED_M$NADIRVALUE, NADIRVALUE_CI = btvar("NADIRVALUE"),
-                     PEAK2TIMING = PRED_M$PEAK2TIMING, PEAK2TIMING_CI = btvar("PEAK2TIMING"),
-                     PEAK2VALUE = PRED_M$PEAK2VALUE, PEAK2VALUE_CI = btvar("PEAK2VALUE"),
-                     NADIR2TIMING = PRED_M$NADIR2TIMING, NADIR2TIMING_CI = btvar("NADIR2TIMING"),
-                     NADIR2VALUE = PRED_M$NADIR2VALUE, NADIR2VALUE_CI = btvar("NADIR2VALUE"),
-                     AMP1 = PRED_M$AMP1, AMP1_CI = btvar("AMP1"),
-                     AMP2 = PRED_M$AMP2, AMP2_CI = btvar("AMP2")) %>%
-      rowwise() %>%
-      mutate(INTENSITY =  (PEAKVALUE - NADIRVALUE) , 
-             INTENSITY2 =  (PEAK2VALUE - NADIR2VALUE),
-             INTENSITY_REL = (PEAKVALUE / NADIRVALUE),
-             INTENSITY2_REL = (PEAK2VALUE / NADIR2VALUE) ) %>%
-      ungroup()
-    # Not calculating CIs of intensity for 4pi specifications
+    # Run following if simulations yielded at least one simulated time series
+    if(nrow(SIMS)>0){
+  
+        # Function to bootstrap CIs of variables
+        btvar <- function(var){
+          varvec <- SIMS %>% pull(get(!!var))
+          if( (length(varvec)>0) & (!all(is.na(varvec))) ){
+            varbt <- boot( na.omit(varvec) , function(u,i) mean(u[i]), R=999)
+            varci <- boot.ci(varbt, conf=0.99, type='bca')
+            return( mean(abs(varci$bca[4:5] - varci$t0)) )
+          } else{
+            return(NA)
+          }
+        }
+    
+        pt <- data.frame(MODEL = "4PI", 
+                         PEAKTIMING = PRED_M$PEAKTIMING, PEAKTIMING_CI = btvar("PEAKTIMING"),
+                         PEAKVALUE = PRED_M$PEAKVALUE, PEAKVALUE_CI = btvar("PEAKVALUE"),
+                         NADIRTIMING = PRED_M$NADIRTIMING, NADIRTIMING_CI = btvar("NADIRTIMING"),
+                         NADIRVALUE = PRED_M$NADIRVALUE, NADIRVALUE_CI = btvar("NADIRVALUE"),
+                         PEAK2TIMING = PRED_M$PEAK2TIMING, PEAK2TIMING_CI = btvar("PEAK2TIMING"),
+                         PEAK2VALUE = PRED_M$PEAK2VALUE, PEAK2VALUE_CI = btvar("PEAK2VALUE"),
+                         NADIR2TIMING = PRED_M$NADIR2TIMING, NADIR2TIMING_CI = btvar("NADIR2TIMING"),
+                         NADIR2VALUE = PRED_M$NADIR2VALUE, NADIR2VALUE_CI = btvar("NADIR2VALUE"),
+                         AMP1 = PRED_M$AMP1, AMP1_CI = btvar("AMP1"),
+                         AMP2 = PRED_M$AMP2, AMP2_CI = btvar("AMP2")) %>%
+          rowwise() %>%
+          mutate(INTENSITY =  (PEAKVALUE - NADIRVALUE) , 
+                 INTENSITY2 =  (PEAK2VALUE - NADIR2VALUE),
+                 INTENSITY_REL = (PEAKVALUE / NADIRVALUE),
+                 INTENSITY2_REL = (PEAK2VALUE / NADIR2VALUE) ) %>%
+          ungroup()
+        # Not calculating CIs of intensity for 4pi specifications
+
+    } else{
+        pt <- data.frame(MODEL = "4PI", 
+                         PEAKTIMING = PRED_M$PEAKTIMING, PEAKTIMING_CI = NA,
+                         PEAKVALUE = PRED_M$PEAKVALUE, PEAKVALUE_CI = NA,
+                         NADIRTIMING = PRED_M$NADIRTIMING, NADIRTIMING_CI = NA,
+                         NADIRVALUE = PRED_M$NADIRVALUE, NADIRVALUE_CI = NA,
+                         PEAK2TIMING = PRED_M$PEAK2TIMING, PEAK2TIMING_CI = NA,
+                         PEAK2VALUE = PRED_M$PEAK2VALUE, PEAK2VALUE_CI = NA,
+                         NADIR2TIMING = PRED_M$NADIR2TIMING, NADIR2TIMING_CI = NA,
+                         NADIR2VALUE = PRED_M$NADIR2VALUE, NADIR2VALUE_CI = NA,
+                         AMP1 = PRED_M$AMP1, AMP1_CI = NA,
+                         AMP2 = PRED_M$AMP2, AMP2_CI = NA) %>%
+          rowwise() %>%
+          mutate(INTENSITY =  (PEAKVALUE - NADIRVALUE) , 
+                 INTENSITY2 =  (PEAK2VALUE - NADIR2VALUE),
+                 INTENSITY_REL = (PEAKVALUE / NADIRVALUE),
+                 INTENSITY2_REL = (PEAK2VALUE / NADIR2VALUE) ) %>%
+          ungroup()
+    }
     
   } else{
     
