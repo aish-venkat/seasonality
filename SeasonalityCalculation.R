@@ -234,136 +234,143 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, linkpar){
     # Calculate actual peak/nadir values from model prediction ----------
     PRED_M <- calc_multiple_harmonics(preddf)
 
-    # Calculate amplitudes and CIs from simulated time series ----------------
-    fitted_model <- auto.arima(vals_con)
+    # Run subsequent lines if PRED_M is not NULL (i.e. enough observations to calculate peaks)
     
-    # Simulate the time series 999 times and retain those highly correlated with original series
-    SIMS <- lapply(1:999, function(z){
-      
-      #print(paste0("Running simulation: ", z))
-      vals_sim <- simulate(fitted_model, nsim=length(vals_con), bootstrap=T)
-      N <- length(vals_sim)
-      
-      # Only run downstream blocks if cross-correlation between
-      # FIRST-DIFFERENCED original and simulated time series at lag 0 is statsig
-      
-      ccftest <- ccf(diff(vals_con %>% as.numeric()), # 1st diff original TS
-                     diff(vals_sim %>% as.numeric()), # 1st diff simulated TS
-                     lag.max = f, type='correlation', plot=F)
-      ss_ccf <- data.frame(LAG = ccftest$lag, ACF = ccftest$acf) %>%
-        filter(LAG == 0) %>%
-        mutate(THRESHOLD_UPPER = qnorm((1 + 0.95)/2)/sqrt(length(vals_con)),
-               THRESHOLD_LOWER = -THRESHOLD_UPPER) %>%
-        filter(ACF>=THRESHOLD_UPPER | ACF<=THRESHOLD_LOWER)
-      
-      if( nrow(ss_ccf) > 0 ){
+    if( !is.null(PRED_M)  ){
+
+        # Calculate amplitudes and CIs from simulated time series ----------------
+        fitted_model <- auto.arima(vals_con)
         
-        # Create new simulation data frame
-        simdf <- data.frame(INDEX=1:N, value=vals_sim %>% as.vector() )
-        simdf <- simdf %>%
-          mutate(SIN2PI = sin(2*pi*omega*INDEX),
-                 COS2PI = cos(2*pi*omega*INDEX),
-                 SIN4PI = sin(4*pi*omega*INDEX),
-                 COS4PI = cos(4*pi*omega*INDEX)) %>%
-          mutate(INDEX2 = INDEX^2, INDEX3 = INDEX^3) 
+        # Simulate the time series 999 times and retain those highly correlated with original series
+        SIMS <- lapply(1:999, function(z){
+          
+          #print(paste0("Running simulation: ", z))
+          vals_sim <- simulate(fitted_model, nsim=length(vals_con), bootstrap=T)
+          N <- length(vals_sim)
+          
+          # Only run downstream blocks if cross-correlation between
+          # FIRST-DIFFERENCED original and simulated time series at lag 0 is statsig
+          
+          ccftest <- ccf(diff(vals_con %>% as.numeric()), # 1st diff original TS
+                         diff(vals_sim %>% as.numeric()), # 1st diff simulated TS
+                         lag.max = f, type='correlation', plot=F)
+          ss_ccf <- data.frame(LAG = ccftest$lag, ACF = ccftest$acf) %>%
+            filter(LAG == 0) %>%
+            mutate(THRESHOLD_UPPER = qnorm((1 + 0.95)/2)/sqrt(length(vals_con)),
+                   THRESHOLD_LOWER = -THRESHOLD_UPPER) %>%
+            filter(ACF>=THRESHOLD_UPPER | ACF<=THRESHOLD_LOWER)
+          
+          if( nrow(ss_ccf) > 0 ){
+            
+            # Create new simulation data frame
+            simdf <- data.frame(INDEX=1:N, value=vals_sim %>% as.vector() )
+            simdf <- simdf %>%
+              mutate(SIN2PI = sin(2*pi*omega*INDEX),
+                     COS2PI = cos(2*pi*omega*INDEX),
+                     SIN4PI = sin(4*pi*omega*INDEX),
+                     COS4PI = cos(4*pi*omega*INDEX)) %>%
+              mutate(INDEX2 = INDEX^2, INDEX3 = INDEX^3) 
+            
+            # Wrap simulation regression in tryCatch in case
+            # there are errors with the simulated model
+            MODELSIM_GLM <- function(simdf) {
+              out <- tryCatch(
+                {
+                  glm(value ~ SIN2PI + COS2PI + SIN4PI + COS4PI,
+                      data = simdf, family = linkpar )
+                },
+                error=function(cond) { return(NA) },
+                warning=function(cond) { return(NA) },
+                finally=function(cond) { }
+              )    
+              return(out)
+            }
+            
+            m_sim <- MODELSIM_GLM(simdf)
+            
+            if(! all(is.na(m_sim)) ){
+              
+              # Predict values for time series
+              simpreddf <- data.frame(INDEX=seq(1, f+1, by=f/100))
+              simpreddf <- simpreddf %>%
+                mutate(SIN2PI = sin(2*pi*omega*INDEX),
+                       COS2PI = cos(2*pi*omega*INDEX),
+                       SIN4PI = sin(4*pi*omega*INDEX),
+                       COS4PI = cos(4*pi*omega*INDEX)) %>%
+                mutate(INDEX2 = INDEX^2, INDEX3 = INDEX^3) 
+              
+              # Add prediction from no trend model
+              simpreddf <- simpreddf %>%
+                mutate(PRED = as.vector(predict(m_sim, newdata=simpreddf, type='response'))) %>%
+                # Adjust index of prediction to match omega for polar plots
+                mutate(INDEX = INDEX-1)
+              
+              mh <- calc_multiple_harmonics(simpreddf)
+              print(mh); return(mh); 
+              
+            } else{
+              return(NULL)
+            }      
+          } # End correlation check
+          
+        }) %>% bind_rows()
+    
+        # Run following if simulations yielded at least one simulated time series
+        if(nrow(SIMS)>0){
+      
+            # Function to bootstrap CIs of variables
+            btvar <- function(var){
+              varvec <- SIMS %>% pull(get(!!var))
+              if( (length(varvec)>0) & (!all(is.na(varvec))) ){
+                varbt <- boot( na.omit(varvec) , function(u,i) mean(u[i]), R=999)
+                varci <- boot.ci(varbt, conf=0.99, type='bca')
+                return( mean(abs(varci$bca[4:5] - varci$t0)) )
+              } else{
+                return(NA)
+              }
+            }
         
-        # Wrap simulation regression in tryCatch in case
-        # there are errors with the simulated model
-        MODELSIM_GLM <- function(simdf) {
-          out <- tryCatch(
-            {
-              glm(value ~ SIN2PI + COS2PI + SIN4PI + COS4PI,
-                  data = simdf, family = linkpar )
-            },
-            error=function(cond) { return(NA) },
-            warning=function(cond) { return(NA) },
-            finally=function(cond) { }
-          )    
-          return(out)
-        }
-        
-        m_sim <- MODELSIM_GLM(simdf)
-        
-        if(! all(is.na(m_sim)) ){
-          
-          # Predict values for time series
-          simpreddf <- data.frame(INDEX=seq(1, f+1, by=f/100))
-          simpreddf <- simpreddf %>%
-            mutate(SIN2PI = sin(2*pi*omega*INDEX),
-                   COS2PI = cos(2*pi*omega*INDEX),
-                   SIN4PI = sin(4*pi*omega*INDEX),
-                   COS4PI = cos(4*pi*omega*INDEX)) %>%
-            mutate(INDEX2 = INDEX^2, INDEX3 = INDEX^3) 
-          
-          # Add prediction from no trend model
-          simpreddf <- simpreddf %>%
-            mutate(PRED = as.vector(predict(m_sim, newdata=simpreddf, type='response'))) %>%
-            # Adjust index of prediction to match omega for polar plots
-            mutate(INDEX = INDEX-1)
-          
-          mh <- calc_multiple_harmonics(simpreddf)
-          print(mh); return(mh); 
-          
+            pt <- data.frame(MODEL = "4PI", 
+                             PEAKTIMING = PRED_M$PEAKTIMING, PEAKTIMING_CI = btvar("PEAKTIMING"),
+                             PEAKVALUE = PRED_M$PEAKVALUE, PEAKVALUE_CI = btvar("PEAKVALUE"),
+                             NADIRTIMING = PRED_M$NADIRTIMING, NADIRTIMING_CI = btvar("NADIRTIMING"),
+                             NADIRVALUE = PRED_M$NADIRVALUE, NADIRVALUE_CI = btvar("NADIRVALUE"),
+                             PEAK2TIMING = PRED_M$PEAK2TIMING, PEAK2TIMING_CI = btvar("PEAK2TIMING"),
+                             PEAK2VALUE = PRED_M$PEAK2VALUE, PEAK2VALUE_CI = btvar("PEAK2VALUE"),
+                             NADIR2TIMING = PRED_M$NADIR2TIMING, NADIR2TIMING_CI = btvar("NADIR2TIMING"),
+                             NADIR2VALUE = PRED_M$NADIR2VALUE, NADIR2VALUE_CI = btvar("NADIR2VALUE"),
+                             AMP1 = PRED_M$AMP1, AMP1_CI = btvar("AMP1"),
+                             AMP2 = PRED_M$AMP2, AMP2_CI = btvar("AMP2")) %>%
+              rowwise() %>%
+              mutate(INTENSITY =  (PEAKVALUE - NADIRVALUE) , 
+                     INTENSITY2 =  (PEAK2VALUE - NADIR2VALUE),
+                     INTENSITY_REL = (PEAKVALUE / NADIRVALUE),
+                     INTENSITY2_REL = (PEAK2VALUE / NADIR2VALUE) ) %>%
+              ungroup()
+            # Not calculating CIs of intensity for 4pi specifications
+    
         } else{
-          return(NULL)
-        }      
-      } # End correlation check
-      
-    }) %>% bind_rows()
-
-    # Run following if simulations yielded at least one simulated time series
-    if(nrow(SIMS)>0){
-  
-        # Function to bootstrap CIs of variables
-        btvar <- function(var){
-          varvec <- SIMS %>% pull(get(!!var))
-          if( (length(varvec)>0) & (!all(is.na(varvec))) ){
-            varbt <- boot( na.omit(varvec) , function(u,i) mean(u[i]), R=999)
-            varci <- boot.ci(varbt, conf=0.99, type='bca')
-            return( mean(abs(varci$bca[4:5] - varci$t0)) )
-          } else{
-            return(NA)
-          }
+            pt <- data.frame(MODEL = "4PI", 
+                             PEAKTIMING = PRED_M$PEAKTIMING, PEAKTIMING_CI = NA,
+                             PEAKVALUE = PRED_M$PEAKVALUE, PEAKVALUE_CI = NA,
+                             NADIRTIMING = PRED_M$NADIRTIMING, NADIRTIMING_CI = NA,
+                             NADIRVALUE = PRED_M$NADIRVALUE, NADIRVALUE_CI = NA,
+                             PEAK2TIMING = PRED_M$PEAK2TIMING, PEAK2TIMING_CI = NA,
+                             PEAK2VALUE = PRED_M$PEAK2VALUE, PEAK2VALUE_CI = NA,
+                             NADIR2TIMING = PRED_M$NADIR2TIMING, NADIR2TIMING_CI = NA,
+                             NADIR2VALUE = PRED_M$NADIR2VALUE, NADIR2VALUE_CI = NA,
+                             AMP1 = PRED_M$AMP1, AMP1_CI = NA,
+                             AMP2 = PRED_M$AMP2, AMP2_CI = NA) %>%
+              rowwise() %>%
+              mutate(INTENSITY =  (PEAKVALUE - NADIRVALUE) , 
+                     INTENSITY2 =  (PEAK2VALUE - NADIR2VALUE),
+                     INTENSITY_REL = (PEAKVALUE / NADIRVALUE),
+                     INTENSITY2_REL = (PEAK2VALUE / NADIR2VALUE) ) %>%
+              ungroup()
         }
-    
-        pt <- data.frame(MODEL = "4PI", 
-                         PEAKTIMING = PRED_M$PEAKTIMING, PEAKTIMING_CI = btvar("PEAKTIMING"),
-                         PEAKVALUE = PRED_M$PEAKVALUE, PEAKVALUE_CI = btvar("PEAKVALUE"),
-                         NADIRTIMING = PRED_M$NADIRTIMING, NADIRTIMING_CI = btvar("NADIRTIMING"),
-                         NADIRVALUE = PRED_M$NADIRVALUE, NADIRVALUE_CI = btvar("NADIRVALUE"),
-                         PEAK2TIMING = PRED_M$PEAK2TIMING, PEAK2TIMING_CI = btvar("PEAK2TIMING"),
-                         PEAK2VALUE = PRED_M$PEAK2VALUE, PEAK2VALUE_CI = btvar("PEAK2VALUE"),
-                         NADIR2TIMING = PRED_M$NADIR2TIMING, NADIR2TIMING_CI = btvar("NADIR2TIMING"),
-                         NADIR2VALUE = PRED_M$NADIR2VALUE, NADIR2VALUE_CI = btvar("NADIR2VALUE"),
-                         AMP1 = PRED_M$AMP1, AMP1_CI = btvar("AMP1"),
-                         AMP2 = PRED_M$AMP2, AMP2_CI = btvar("AMP2")) %>%
-          rowwise() %>%
-          mutate(INTENSITY =  (PEAKVALUE - NADIRVALUE) , 
-                 INTENSITY2 =  (PEAK2VALUE - NADIR2VALUE),
-                 INTENSITY_REL = (PEAKVALUE / NADIRVALUE),
-                 INTENSITY2_REL = (PEAK2VALUE / NADIR2VALUE) ) %>%
-          ungroup()
-        # Not calculating CIs of intensity for 4pi specifications
-
     } else{
-        pt <- data.frame(MODEL = "4PI", 
-                         PEAKTIMING = PRED_M$PEAKTIMING, PEAKTIMING_CI = NA,
-                         PEAKVALUE = PRED_M$PEAKVALUE, PEAKVALUE_CI = NA,
-                         NADIRTIMING = PRED_M$NADIRTIMING, NADIRTIMING_CI = NA,
-                         NADIRVALUE = PRED_M$NADIRVALUE, NADIRVALUE_CI = NA,
-                         PEAK2TIMING = PRED_M$PEAK2TIMING, PEAK2TIMING_CI = NA,
-                         PEAK2VALUE = PRED_M$PEAK2VALUE, PEAK2VALUE_CI = NA,
-                         NADIR2TIMING = PRED_M$NADIR2TIMING, NADIR2TIMING_CI = NA,
-                         NADIR2VALUE = PRED_M$NADIR2VALUE, NADIR2VALUE_CI = NA,
-                         AMP1 = PRED_M$AMP1, AMP1_CI = NA,
-                         AMP2 = PRED_M$AMP2, AMP2_CI = NA) %>%
-          rowwise() %>%
-          mutate(INTENSITY =  (PEAKVALUE - NADIRVALUE) , 
-                 INTENSITY2 =  (PEAK2VALUE - NADIR2VALUE),
-                 INTENSITY_REL = (PEAKVALUE / NADIRVALUE),
-                 INTENSITY2_REL = (PEAK2VALUE / NADIR2VALUE) ) %>%
-          ungroup()
-    }
+      pt <- NA
+    } # End PRED_M check
     
   } else{
     
