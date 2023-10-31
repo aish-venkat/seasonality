@@ -384,7 +384,7 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, linkpar){
     
     # Extract terms from variance-covariance matrix
     # Own-term variance is on diagonal, other terms are covariances
-    X <- unname(vcov(mod))
+    X <- unname(vcov(mod_notrend))
     sigma_sin <- X[2,2]; sigma_cos <- X[3,3]; sigma_sincos <- X[2,3];
     
     # Peak timing (same across specifications) -----------
