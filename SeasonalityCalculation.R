@@ -410,7 +410,7 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, linkpar){
                                        ifelse(coef_sin<0 & coef_cos>0, (shift + 2*pi)*period))))
     
     # CI of peak timing
-    ci_peaktiming <- 1.96 * sqrt(var_phi) * period
+    ci_peaktiming <- 1.96 * sqrt(var_phi)
     
     # Nadir Timing
     nadirtiming <- ifelse(coef_cos < 0, shift + (pi/2),
