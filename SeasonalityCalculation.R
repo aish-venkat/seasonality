@@ -159,7 +159,7 @@ calc_multiple_harmonics <- function(prediction_frame){
   
     # PULL breakpoints where 2nd and 3rd derivatives have the same sign / 
     # are moving in the same direction
-    AMPS <- AMPS %>%  filter(SLOPE_3 == SLOPE_4) 
+    # AMPS <- AMPS %>%  filter(SLOPE_3 == SLOPE_4) 
     
     # IF only two rows are present with the same amplitudes, we have a square curve
     # so the 'PEAK' is technically in between the two zero values
