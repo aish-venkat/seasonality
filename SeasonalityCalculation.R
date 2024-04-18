@@ -253,7 +253,7 @@ peaktimecalc <- function(mod, f, omega, vals_con, timedf, linkpar){
           
           ccftest <- ccf(diff(vals_con %>% as.numeric()), # 1st diff original TS
                          diff(vals_sim %>% as.numeric()), # 1st diff simulated TS
-                         lag.max = f, type='correlation', plot=F)
+                         lag.max = f, type='correlation', plot=F, na.action=na.pass)
           ss_ccf <- data.frame(LAG = ccftest$lag, ACF = ccftest$acf) %>%
             filter(LAG == 0) %>%
             mutate(THRESHOLD_UPPER = qnorm((1 + 0.95)/2)/sqrt(length(vals_con)),
